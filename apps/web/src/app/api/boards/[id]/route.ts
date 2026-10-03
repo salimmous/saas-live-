@@ -52,13 +52,13 @@ export async function GET(req: NextRequest, context: RouteContext) {
         ? 'Atelier Stratégie & Brainstorming'
         : (id === 'board-demo-2' ? 'Architecture Système & Mind Map' : 'Tableau Collaboratif'),
       description: 'Espace visuel collaboratif en temps réel',
-      isPublic: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
       owner: { id: 'demo-user-1', name: 'Utilisateur Démo', email: 'demo@whiteboard.local' },
     };
 
-    return NextResponse.json({ board: fallbackBoard, userRole: 'owner' });
+    const isOwnerUser = isDemo || (session?.user && session.user.id === 'demo-user-1');
+    const userRole = isOwnerUser ? 'owner' : 'editor';
+
+    return NextResponse.json({ board: fallbackBoard, userRole });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

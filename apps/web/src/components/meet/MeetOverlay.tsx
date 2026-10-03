@@ -23,6 +23,7 @@ import {
   Radio,
   ChevronRight,
   Minus,
+  User,
 } from 'lucide-react';
 
 export interface MeetParticipant {
@@ -62,18 +63,25 @@ export function MeetOverlay({
   onClose,
   onPermissionChange,
 }: MeetOverlayProps) {
-  // Détection Hôte (Propriétaire du tableau ou créateur de session)
+  // Nom d'affichage éditable par l'invité
+  const [displayName, setDisplayName] = useState(
+    currentUser.name.startsWith('Participant ') ? '' : currentUser.name
+  );
+  const [nameError, setNameError] = useState(false);
+
+  // Détection Hôte : UNIQUEMENT l'utilisateur qui a le rôle owner ou session.hostId
   const [hostId, setHostId] = useState<string>('');
-  const isHost = currentUser.role === 'owner' || (hostId ? hostId === currentUser.id : false);
+  const isHost = hostId ? hostId === currentUser.id : currentUser.role === 'owner';
 
   // Médias locaux
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
   const [isMicOn, setIsMicOn] = useState(true);
   const [isCamOn, setIsCamOn] = useState(true);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
 
-  // Flux distants WebRTC
+  // Flux distants WebRTC P2P (Vidéo & Audio réels)
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
 
   // États de session
@@ -88,117 +96,51 @@ export function MeetOverlay({
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const pollTimerRef = useRef<any>(null);
-  const bcRef = useRef<BroadcastChannel | null>(null);
-  const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const peerRef = useRef<any>(null);
+  const activeCallsRef = useRef<Map<string, any>>(new Map());
 
-  // Configuration WebRTC STUN
-  const rtcConfig: RTCConfiguration = {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-    ],
-  };
-
-  // Envoi de signal WebRTC (BroadcastChannel + API server)
-  const sendWebRtcSignal = useCallback(
-    (to: string, signal: any) => {
-      // 1. Instantanéité locale (entre onglets du même navigateur)
-      bcRef.current?.postMessage({
-        type: 'WEBRTC_SIGNAL',
-        from: currentUser.id,
-        to,
-        signal,
-      });
-
-      // 2. Multi-appareils via API serveur
-      fetch(`/api/boards/${boardId}/meet`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'signal',
-          userId: currentUser.id,
-          to,
-          signal,
-        }),
-      }).catch(() => {});
+  // Générer un Peer ID déterministe pour PeerJS
+  const getPeerIdForUser = useCallback(
+    (uid: string) => {
+      const cleanBoard = boardId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10);
+      const cleanUser = uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
+      return `wb_${cleanBoard}_${cleanUser}`;
     },
-    [boardId, currentUser.id]
+    [boardId]
   );
 
-  // Création / Récupération d'une connexion Peer WebRTC
-  const getOrCreatePeerConnection = useCallback(
-    (peerId: string) => {
-      if (pcsRef.current.has(peerId)) {
-        return pcsRef.current.get(peerId)!;
-      }
+  const myPeerId = getPeerIdForUser(currentUser.id);
 
-      const pc = new RTCPeerConnection(rtcConfig);
-
-      // Ajouter les flux locaux
-      if (localStream) {
-        localStream.getTracks().forEach((track) => {
-          pc.addTrack(track, localStream);
-        });
-      }
-
-      // Réception du flux vidéo / audio distant
-      pc.ontrack = (event) => {
-        if (event.streams && event.streams[0]) {
-          setRemoteStreams((prev) => ({
-            ...prev,
-            [peerId]: event.streams[0],
-          }));
-        }
-      };
-
-      // Échange des candidats ICE
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          sendWebRtcSignal(peerId, { candidate: event.candidate });
-        }
-      };
-
-      pcsRef.current.set(peerId, pc);
-      return pc;
-    },
-    [localStream, sendWebRtcSignal]
-  );
-
-  // Mise à jour des tracks sur les PeerConnections si le flux local change
-  useEffect(() => {
-    if (!localStream) return;
-    pcsRef.current.forEach((pc) => {
-      const senders = pc.getSenders();
-      localStream.getTracks().forEach((track) => {
-        const sender = senders.find((s) => s.track?.kind === track.kind);
-        if (sender) {
-          sender.replaceTrack(track).catch(() => {});
-        } else {
-          pc.addTrack(track, localStream);
-        }
-      });
-    });
-  }, [localStream]);
-
-  // Initialisation du flux caméra & micro
+  // Initialisation du flux caméra & micro local
   const startLocalMedia = async () => {
     try {
       setMediaError(null);
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 360 } },
-        audio: true,
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 360 },
+          facingMode: 'user',
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
       });
+
       setLocalStream(stream);
+      localStreamRef.current = stream;
+
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
       return stream;
     } catch (err: any) {
-      console.warn('Accès caméra/micro standard refusé, essai audio:', err);
+      console.warn('Caméra/Micro refusé ou absent, essai audio seul:', err);
       try {
         const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true });
         setLocalStream(audioOnly);
+        localStreamRef.current = audioOnly;
         setIsCamOn(false);
         return audioOnly;
       } catch (err2: any) {
@@ -217,104 +159,154 @@ export function MeetOverlay({
     }
   }, [localStream, isJoined]);
 
-  // Gestion des signaux WebRTC entrants
-  const handleIncomingSignal = useCallback(
-    async (from: string, signal: any) => {
-      if (from === currentUser.id) return;
-      const pc = getOrCreatePeerConnection(from);
-
-      if (signal.offer) {
-        await pc.setRemoteDescription(new RTCSessionDescription(signal.offer));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        sendWebRtcSignal(from, { answer });
-      } else if (signal.answer) {
-        await pc.setRemoteDescription(new RTCSessionDescription(signal.answer));
-      } else if (signal.candidate) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
-        } catch (e) {
-          console.warn('Erreur ICE:', e);
-        }
-      }
-    },
-    [currentUser.id, getOrCreatePeerConnection, sendWebRtcSignal]
-  );
-
-  // Canal BroadcastChannel (Signaling + État)
+  // Initialisation du client PeerJS pour le streaming WebRTC P2P (Voix & Vidéo en direct)
   useEffect(() => {
-    if (typeof window === 'undefined' || !isOpen) return;
+    if (!isJoined || typeof window === 'undefined') return;
 
-    try {
-      const channel = new BroadcastChannel(`wb_meet_bc_${boardId}`);
-      bcRef.current = channel;
+    let peerInstance: any = null;
+    let isDestroyed = false;
 
-      channel.onmessage = async (event) => {
-        const msg = event.data;
-        if (!msg) return;
+    const initPeer = async () => {
+      try {
+        const PeerModule = await import('peerjs');
+        const Peer = PeerModule.default;
 
-        // Signal WebRTC entrant
-        if (msg.type === 'WEBRTC_SIGNAL' && msg.to === currentUser.id) {
-          handleIncomingSignal(msg.from, msg.signal);
-          return;
-        }
+        peerInstance = new Peer(myPeerId, {
+          debug: 1,
+          config: {
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' },
+              { urls: 'stun:stun2.l.google.com:19302' },
+            ],
+          },
+        });
 
-        // Nouveau pair qui a rejoint : l'ancien pair initie l'Offre WebRTC
-        if (msg.type === 'PEER_JOINED' && msg.peerId !== currentUser.id) {
-          const pc = getOrCreatePeerConnection(msg.peerId);
-          try {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            sendWebRtcSignal(msg.peerId, { offer });
-          } catch (e) {
-            console.error('Erreur createOffer:', e);
-          }
-        }
+        peerRef.current = peerInstance;
 
-        // Synchronisation des participants
-        if (msg.type === 'SYNC_PARTICIPANT' && msg.participant) {
-          setParticipants((prev) => {
-            const map = new Map<string, MeetParticipant>();
-            prev.forEach((p) => map.set(p.id, p));
-            map.set(msg.participant.id, msg.participant);
-            return Array.from(map.values());
+        peerInstance.on('open', (id: string) => {
+          console.log('[PeerJS] Connecté avec ID:', id);
+        });
+
+        // Réception d'un appel vidéo/audio entrant
+        peerInstance.on('call', (call: any) => {
+          console.log('[PeerJS] Appel entrant de:', call.peer);
+          activeCallsRef.current.set(call.peer, call);
+
+          // Répondre avec notre flux local (si disponible)
+          const currentStream = localStreamRef.current;
+          call.answer(currentStream || undefined);
+
+          // Réception du flux distant
+          call.on('stream', (remoteStream: MediaStream) => {
+            console.log('[PeerJS] Flux reçu de:', call.peer);
+            if (!isDestroyed) {
+              setRemoteStreams((prev) => ({
+                ...prev,
+                [call.peer]: remoteStream,
+              }));
+            }
           });
-        } else if (msg.type === 'REMOVE_PARTICIPANT' && msg.userId) {
-          setParticipants((prev) => prev.filter((p) => p.id !== msg.userId));
-          const pc = pcsRef.current.get(msg.userId);
-          if (pc) {
-            pc.close();
-            pcsRef.current.delete(msg.userId);
-          }
+
+          call.on('close', () => {
+            activeCallsRef.current.delete(call.peer);
+            setRemoteStreams((prev) => {
+              const copy = { ...prev };
+              delete copy[call.peer];
+              return copy;
+            });
+          });
+
+          call.on('error', (err: any) => {
+            console.warn('[PeerJS] Erreur d’appel:', err);
+          });
+        });
+
+        peerInstance.on('error', (err: any) => {
+          console.warn('[PeerJS] Erreur globale:', err.type, err.message);
+        });
+      } catch (err) {
+        console.error('[PeerJS] Erreur d’initialisation:', err);
+      }
+    };
+
+    initPeer();
+
+    return () => {
+      isDestroyed = true;
+      if (peerInstance) {
+        peerInstance.destroy();
+        peerRef.current = null;
+      }
+      activeCallsRef.current.clear();
+      setRemoteStreams({});
+    };
+  }, [isJoined, myPeerId]);
+
+  // Appeler les pairs distants quand la liste des participants est mise à jour
+  const connectToPeer = useCallback(
+    (targetUserId: string) => {
+      if (!peerRef.current || targetUserId === currentUser.id) return;
+      const targetPeerId = getPeerIdForUser(targetUserId);
+
+      // Si déjà en appel avec ce pair, ne pas rappeler
+      if (activeCallsRef.current.has(targetPeerId) || remoteStreams[targetPeerId]) {
+        return;
+      }
+
+      const stream = localStreamRef.current;
+      console.log('[PeerJS] Appel du pair:', targetPeerId);
+      try {
+        const call = peerRef.current.call(targetPeerId, stream || undefined);
+        if (!call) return;
+
+        activeCallsRef.current.set(targetPeerId, call);
+
+        call.on('stream', (remoteStream: MediaStream) => {
+          console.log('[PeerJS] Flux reçu (en appelant) de:', targetPeerId);
+          setRemoteStreams((prev) => ({
+            ...prev,
+            [targetPeerId]: remoteStream,
+          }));
+        });
+
+        call.on('close', () => {
+          activeCallsRef.current.delete(targetPeerId);
           setRemoteStreams((prev) => {
             const copy = { ...prev };
-            delete copy[msg.userId];
+            delete copy[targetPeerId];
             return copy;
           });
-        }
-      };
+        });
 
-      // Annoncer la présence
-      if (isJoined) {
-        channel.postMessage({ type: 'PEER_JOINED', peerId: currentUser.id });
+        call.on('error', (err: any) => {
+          console.warn('[PeerJS] Erreur appel vers:', targetPeerId, err);
+        });
+      } catch (err) {
+        console.warn('[PeerJS] Impossible d’appeler:', err);
       }
+    },
+    [currentUser.id, getPeerIdForUser, remoteStreams]
+  );
 
-      return () => {
-        channel.close();
-        bcRef.current = null;
-      };
-    } catch (e) {
-      console.warn('BroadcastChannel error:', e);
-    }
-  }, [boardId, isOpen, isJoined, currentUser.id, getOrCreatePeerConnection, handleIncomingSignal, sendWebRtcSignal]);
-
-  // Rejoindre la réunion
+  // Rejoindre la réunion après saisie du prénom / nom
   const joinMeeting = async () => {
-    const stream = await startLocalMedia();
+    const finalName = displayName.trim();
+    if (!finalName) {
+      setNameError(true);
+      return;
+    }
+    setNameError(false);
 
-    const localP: MeetParticipant = {
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem(`guest_name_${boardId}`, finalName);
+    }
+
+    await startLocalMedia();
+
+    const initialParticipant: MeetParticipant = {
       id: currentUser.id,
-      name: currentUser.name,
+      name: finalName,
       role: isHost ? 'host' : 'participant',
       hasVideo: isCamOn,
       hasAudio: isMicOn,
@@ -326,7 +318,7 @@ export function MeetOverlay({
     setParticipants((prev) => {
       const map = new Map<string, MeetParticipant>();
       prev.forEach((p) => map.set(p.id, p));
-      map.set(currentUser.id, localP);
+      map.set(currentUser.id, initialParticipant);
       return Array.from(map.values());
     });
 
@@ -337,7 +329,7 @@ export function MeetOverlay({
         body: JSON.stringify({
           action: 'knock',
           userId: currentUser.id,
-          userName: currentUser.name,
+          userName: finalName,
           isHost,
           hasVideo: isCamOn,
           hasAudio: isMicOn,
@@ -348,21 +340,19 @@ export function MeetOverlay({
       if (data.status === 'approved') {
         setIsJoined(true);
         setIsInWaitingRoom(false);
-        if (data.role === 'host') setHostId(currentUser.id);
-        bcRef.current?.postMessage({ type: 'PEER_JOINED', peerId: currentUser.id });
-        bcRef.current?.postMessage({ type: 'SYNC_PARTICIPANT', participant: localP });
+        if (data.role === 'host') {
+          setHostId(currentUser.id);
+        }
       } else {
         setIsInWaitingRoom(true);
       }
     } catch {
       setIsJoined(true);
       setIsInWaitingRoom(false);
-      bcRef.current?.postMessage({ type: 'PEER_JOINED', peerId: currentUser.id });
-      bcRef.current?.postMessage({ type: 'SYNC_PARTICIPANT', participant: localP });
     }
   };
 
-  // Polling du serveur (participants + signaux WebRTC distants)
+  // Polling régulier du serveur pour l'état des participants
   const pollMeetState = useCallback(async () => {
     if (!isOpen) return;
 
@@ -381,19 +371,19 @@ export function MeetOverlay({
           setIsJoined(true);
         }
 
-        // Restrictions de l'hôte
+        // Appliquer les restrictions imposées par l'Hôte
         if (currentInList) {
           if (currentInList.isMutedByHost && isMicOn) {
             setIsMicOn(false);
-            if (localStream) {
-              localStream.getAudioTracks().forEach((t) => (t.enabled = false));
+            if (localStreamRef.current) {
+              localStreamRef.current.getAudioTracks().forEach((t) => (t.enabled = false));
             }
           }
 
           if (currentInList.isVideoBlockedByHost && isCamOn) {
             setIsCamOn(false);
-            if (localStream) {
-              localStream.getVideoTracks().forEach((t) => (t.enabled = false));
+            if (localStreamRef.current) {
+              localStreamRef.current.getVideoTracks().forEach((t) => (t.enabled = false));
             }
           }
 
@@ -402,7 +392,7 @@ export function MeetOverlay({
           }
         }
 
-        // Fusion sans écrasement
+        // Mise à jour de la liste
         setParticipants((prev) => {
           const map = new Map<string, MeetParticipant>();
           prev.forEach((p) => map.set(p.id, p));
@@ -411,8 +401,10 @@ export function MeetOverlay({
           if (isJoined) {
             map.set(currentUser.id, {
               id: currentUser.id,
-              name: currentUser.name,
-              role: isHost ? 'host' : 'participant',
+              name: displayName || currentUser.name,
+              role: (hostId ? hostId === currentUser.id : currentUser.role === 'owner')
+                ? 'host'
+                : 'participant',
               hasVideo: isCamOn,
               hasAudio: isMicOn,
               canDraw: currentInList ? currentInList.canDraw : true,
@@ -423,35 +415,48 @@ export function MeetOverlay({
 
           return Array.from(map.values());
         });
+
+        // Appeler tout nouveau participant qui n'est pas encore connecté en P2P
+        if (isJoined && peerRef.current) {
+          serverParticipants.forEach((p) => {
+            if (p.id !== currentUser.id) {
+              connectToPeer(p.id);
+            }
+          });
+        }
       }
 
-      // Heartbeat + signaux
+      // Heartbeat
       if (isJoined) {
-        const heartbeatRes = await fetch(`/api/boards/${boardId}/meet`, {
+        await fetch(`/api/boards/${boardId}/meet`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             action: 'heartbeat',
             userId: currentUser.id,
-            userName: currentUser.name,
+            userName: displayName || currentUser.name,
             hasVideo: isCamOn,
             hasAudio: isMicOn,
           }),
         });
-
-        if (heartbeatRes.ok) {
-          const hbData = await heartbeatRes.json();
-          if (Array.isArray(hbData.signals)) {
-            for (const sig of hbData.signals) {
-              handleIncomingSignal(sig.from, sig.signal);
-            }
-          }
-        }
       }
     } catch (err) {
       console.error('Meet poll error:', err);
     }
-  }, [boardId, currentUser.id, currentUser.name, isInWaitingRoom, isJoined, isCamOn, isMicOn, isHost, localStream, onPermissionChange, isOpen, handleIncomingSignal]);
+  }, [
+    boardId,
+    currentUser.id,
+    currentUser.name,
+    displayName,
+    hostId,
+    isInWaitingRoom,
+    isJoined,
+    isCamOn,
+    isMicOn,
+    onPermissionChange,
+    isOpen,
+    connectToPeer,
+  ]);
 
   useEffect(() => {
     if (isOpen) {
@@ -463,10 +468,11 @@ export function MeetOverlay({
     };
   }, [isOpen, pollMeetState]);
 
-  // Quitter le Meet
+  // Quitter la réunion
   const handleLeave = async () => {
-    if (localStream) {
-      localStream.getTracks().forEach((t) => t.stop());
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((t) => t.stop());
+      localStreamRef.current = null;
       setLocalStream(null);
     }
     if (screenStreamRef.current) {
@@ -474,11 +480,12 @@ export function MeetOverlay({
       screenStreamRef.current = null;
     }
 
-    pcsRef.current.forEach((pc) => pc.close());
-    pcsRef.current.clear();
+    if (peerRef.current) {
+      peerRef.current.destroy();
+      peerRef.current = null;
+    }
+    activeCallsRef.current.clear();
     setRemoteStreams({});
-
-    bcRef.current?.postMessage({ type: 'REMOVE_PARTICIPANT', userId: currentUser.id });
 
     try {
       await fetch(`/api/boards/${boardId}/meet`, {
@@ -496,53 +503,25 @@ export function MeetOverlay({
     onClose();
   };
 
-  // Toggles utilisateur
+  // Toggles Médias
   const toggleMic = () => {
     const nextState = !isMicOn;
-    if (localStream) {
-      localStream.getAudioTracks().forEach((t) => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getAudioTracks().forEach((t) => {
         t.enabled = nextState;
       });
     }
     setIsMicOn(nextState);
-
-    bcRef.current?.postMessage({
-      type: 'SYNC_PARTICIPANT',
-      participant: {
-        id: currentUser.id,
-        name: currentUser.name,
-        role: isHost ? 'host' : 'participant',
-        hasVideo: isCamOn,
-        hasAudio: nextState,
-        canDraw: true,
-        isMutedByHost: false,
-        isVideoBlockedByHost: false,
-      },
-    });
   };
 
   const toggleCam = () => {
     const nextState = !isCamOn;
-    if (localStream) {
-      localStream.getVideoTracks().forEach((t) => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getVideoTracks().forEach((t) => {
         t.enabled = nextState;
       });
     }
     setIsCamOn(nextState);
-
-    bcRef.current?.postMessage({
-      type: 'SYNC_PARTICIPANT',
-      participant: {
-        id: currentUser.id,
-        name: currentUser.name,
-        role: isHost ? 'host' : 'participant',
-        hasVideo: nextState,
-        hasAudio: isMicOn,
-        canDraw: true,
-        isMutedByHost: false,
-        isVideoBlockedByHost: false,
-      },
-    });
   };
 
   const toggleScreenShare = async () => {
@@ -575,7 +554,7 @@ export function MeetOverlay({
     }
   };
 
-  // Actions de l'Hôte
+  // Modération Hôte
   const handleApproveUser = async (targetUserId: string) => {
     await fetch(`/api/boards/${boardId}/meet`, {
       method: 'POST',
@@ -664,7 +643,6 @@ export function MeetOverlay({
       body: JSON.stringify({ action: 'kick', targetUserId }),
     });
     setParticipants((prev) => prev.filter((item) => item.id !== targetUserId));
-    bcRef.current?.postMessage({ type: 'REMOVE_PARTICIPANT', userId: targetUserId });
     pollMeetState();
   };
 
@@ -679,11 +657,11 @@ export function MeetOverlay({
 
   const activeCount = isJoined ? Math.max(1, participants.length) : 0;
 
-  // 1. Écran de Pré-Rejoint (Modal centré pour vérifier caméra et micro)
+  // 1. Écran de Pré-Rejoint : Saisie OBLIGATOIRE du prénom / nom par l'invité
   if (!isJoined && !isInWaitingRoom) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-md animate-fade-in p-4">
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl text-white space-y-6">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-md animate-fade-in p-4">
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl text-white space-y-5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
               <div className="w-10 h-10 rounded-2xl bg-indigo-600/30 border border-indigo-500/40 flex items-center justify-center text-indigo-400">
@@ -691,7 +669,7 @@ export function MeetOverlay({
               </div>
               <div>
                 <h3 className="font-bold text-lg text-white">Rejoindre la Réunion</h3>
-                <p className="text-xs text-slate-400">Collaboration vidéo & audio en direct</p>
+                <p className="text-xs text-slate-400">Collaboration vidéo & voix en direct</p>
               </div>
             </div>
             <button
@@ -700,6 +678,34 @@ export function MeetOverlay({
             >
               <X size={18} />
             </button>
+          </div>
+
+          {/* Saisie obligatoire du prénom / nom de l'invité */}
+          <div className="space-y-1.5 text-left">
+            <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+              <User size={14} className="text-indigo-400" />
+              <span>Votre Prénom & Nom :</span>
+            </label>
+            <input
+              type="text"
+              value={displayName}
+              onChange={(e) => {
+                setDisplayName(e.target.value);
+                if (nameError) setNameError(false);
+              }}
+              placeholder="Ex: Yasser, Salim, Mehdi..."
+              className={`w-full px-4 py-2.5 bg-slate-800/90 border rounded-xl text-white text-sm focus:outline-none transition-colors ${
+                nameError
+                  ? 'border-rose-500 ring-2 ring-rose-500/20'
+                  : 'border-slate-700 focus:border-indigo-500'
+              }`}
+              autoFocus
+            />
+            {nameError && (
+              <span className="text-[11px] text-rose-400 block">
+                Veuillez entrer votre prénom ou nom pour entrer dans la réunion.
+              </span>
+            )}
           </div>
 
           {/* Aperçu vidéo avant d'entrer */}
@@ -714,7 +720,7 @@ export function MeetOverlay({
             {!isCamOn && (
               <div className="flex flex-col items-center gap-2 text-slate-400">
                 <div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center text-xl font-bold text-slate-300">
-                  {currentUser.name.charAt(0).toUpperCase()}
+                  {(displayName || 'U').charAt(0).toUpperCase()}
                 </div>
                 <span className="text-xs">Caméra désactivée</span>
               </div>
@@ -774,10 +780,10 @@ export function MeetOverlay({
     );
   }
 
-  // 2. Écran Salle d'Attente pour les invités non encore autorisés
+  // 2. Écran Salle d'Attente
   if (isInWaitingRoom) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-md animate-fade-in p-4">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-md animate-fade-in p-4">
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-sm w-full text-center space-y-5 shadow-2xl text-white">
           <div className="w-16 h-16 rounded-full bg-blue-500/20 text-blue-400 mx-auto flex items-center justify-center">
             <Radio size={32} className="animate-pulse" />
@@ -789,7 +795,7 @@ export function MeetOverlay({
             </p>
           </div>
           <div className="p-3 bg-slate-800/80 rounded-xl text-xs text-slate-300 font-mono">
-            Participant : {currentUser.name}
+            Participant : {displayName || currentUser.name}
           </div>
           <button
             type="button"
@@ -822,400 +828,426 @@ export function MeetOverlay({
     );
   }
 
-  // 4. RÉUNION EN COURS : SIDEBAR COMPLÈTE À DROITE (Zéro collision avec la barre d'outils du tableau blanc !)
+  // 4. RÉUNION EN COURS : SIDEBAR DROITE INTÉGRÉE (Zéro collision tableau blanc !)
   return (
-    <aside className="fixed top-0 right-0 bottom-0 w-80 sm:w-88 bg-slate-900/98 backdrop-blur-2xl border-l border-slate-800 z-50 flex flex-col text-white shadow-2xl animate-slide-in">
-      {/* Sidebar Header */}
-      <div className="p-4 border-b border-slate-800/80 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <span className="flex h-2.5 w-2.5 relative">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-          </span>
-          <div>
-            <h3 className="font-bold text-sm text-white flex items-center gap-1.5">
-              <span>Meet en direct</span>
-              <span className="text-[11px] font-semibold text-slate-400">({activeCount})</span>
-            </h3>
-          </div>
-        </div>
+    <>
+      {/* Lecteurs Audio distants cachés (Garantit le son sur iOS Safari et Mac Chrome) */}
+      {Object.entries(remoteStreams).map(([peerKey, stream]) => (
+        <audio
+          key={`audio_${peerKey}`}
+          ref={(audioEl) => {
+            if (audioEl && audioEl.srcObject !== stream) {
+              audioEl.srcObject = stream;
+              audioEl.play().catch(() => {});
+            }
+          }}
+          autoPlay
+          playsInline
+        />
+      ))}
 
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => setIsMinimized(true)}
-            className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
-            title="Réduire la barre latérale"
-          >
-            <Minus size={16} />
-          </button>
-          <button
-            type="button"
-            onClick={handleLeave}
-            className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg hover:bg-rose-950/40 transition-colors"
-            title="Quitter la réunion"
-          >
-            <X size={16} />
-          </button>
-        </div>
-      </div>
-
-      {/* Alertes Salle d'Attente ("Knock") pour l'Hôte */}
-      {isHost && waitingRoom.length > 0 && (
-        <div className="p-3 bg-indigo-950/60 border-b border-indigo-500/40 space-y-2">
-          <div className="flex items-center gap-1.5 text-indigo-300 font-bold text-xs uppercase tracking-wider">
-            <Sparkles size={14} />
-            <span>Demande d’accès ({waitingRoom.length})</span>
-          </div>
-          <div className="space-y-1.5">
-            {waitingRoom.map((w) => (
-              <div
-                key={w.id}
-                className="flex items-center justify-between bg-slate-900/90 px-3 py-2 rounded-xl border border-indigo-500/30 text-xs"
-              >
-                <span className="font-semibold text-white truncate max-w-[120px]">{w.name}</span>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => handleApproveUser(w.id)}
-                    className="p-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-colors"
-                    title="Autoriser"
-                  >
-                    <UserCheck size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRejectUser(w.id)}
-                    className="p-1 text-slate-400 hover:text-rose-400 rounded-md transition-colors"
-                    title="Refuser"
-                  >
-                    <UserX size={14} />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Grille des Flux Vidéo (Vous + Autres participants avec WebRTC) */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
-        {/* Tuile Vidéo Locale (Vous) */}
-        <div
-          className={`relative w-full aspect-video bg-slate-950 rounded-2xl overflow-hidden shadow-md select-none ${
-            isHost
-              ? 'border-2 border-amber-400 ring-2 ring-amber-400/30'
-              : 'border-2 border-indigo-500/80 ring-2 ring-indigo-500/20'
-          }`}
-        >
-          {/* Badge Rôle en haut à gauche */}
-          <div className="absolute top-2 left-2 z-10">
-            {isHost ? (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-400 via-amber-500 to-yellow-500 text-slate-950 font-extrabold text-[10px] tracking-wide shadow-md">
-                <ShieldCheck size={12} className="text-slate-950" />
-                <span>ADMIN / HÔTE</span>
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800/90 text-slate-300 font-medium text-[10px] border border-slate-700/80">
-                <span>Participant</span>
-              </span>
-            )}
-          </div>
-
-          <video
-            ref={localVideoRef}
-            autoPlay
-            playsInline
-            muted
-            className={`w-full h-full object-cover ${!isCamOn && 'hidden'}`}
-          />
-          {!isCamOn && (
-            <div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-slate-300 gap-1">
-              <div
-                className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg text-white shadow-md ${
-                  isHost ? 'bg-amber-600' : 'bg-indigo-600'
-                }`}
-              >
-                {currentUser.name.charAt(0).toUpperCase()}
-              </div>
-              <span className="text-[10px] text-slate-400">Caméra désactivée</span>
-            </div>
-          )}
-
-          <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between text-[11px] font-semibold text-white bg-slate-900/85 backdrop-blur-xs px-2.5 py-1 rounded-lg border border-slate-700/60">
-            <span className="truncate max-w-[140px]">{currentUser.name} (Vous)</span>
-            <div className="flex items-center gap-1">
-              {!isMicOn ? (
-                <VolumeX size={13} className="text-rose-400" />
-              ) : (
-                <Mic size={13} className="text-emerald-400" />
-              )}
+      <aside className="fixed top-0 right-0 bottom-0 w-80 sm:w-88 bg-slate-900/98 backdrop-blur-2xl border-l border-slate-800 z-50 flex flex-col text-white shadow-2xl animate-slide-in">
+        {/* Sidebar Header */}
+        <div className="p-4 border-b border-slate-800/80 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-2.5 w-2.5 relative">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+            </span>
+            <div>
+              <h3 className="font-bold text-sm text-white flex items-center gap-1.5">
+                <span>Meet en direct</span>
+                <span className="text-[11px] font-semibold text-slate-400">({activeCount})</span>
+              </h3>
             </div>
           </div>
-        </div>
 
-        {/* Tuiles Vidéo Distantes (WebRTC Live Stream) */}
-        {participants
-          .filter((p) => p.id !== currentUser.id)
-          .map((p) => {
-            const isParticipantHost = p.role === 'host' || (hostId ? p.id === hostId : false);
-            const hasRemoteStream = !!remoteStreams[p.id];
-
-            return (
-              <div
-                key={p.id}
-                className={`relative w-full aspect-video bg-slate-950 rounded-2xl overflow-hidden shadow-md select-none ${
-                  isParticipantHost
-                    ? 'border-2 border-amber-400 ring-2 ring-amber-400/30'
-                    : p.isSpeaking
-                    ? 'border-2 border-emerald-400 ring-2 ring-emerald-400/30'
-                    : 'border-2 border-slate-700/80'
-                }`}
-              >
-                {/* Badge Rôle */}
-                <div className="absolute top-2 left-2 z-10">
-                  {isParticipantHost ? (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-400 via-amber-500 to-yellow-500 text-slate-950 font-extrabold text-[10px] tracking-wide shadow-md">
-                      <ShieldCheck size={12} className="text-slate-950" />
-                      <span>ADMIN / HÔTE</span>
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800/90 text-slate-300 font-medium text-[10px] border border-slate-700">
-                      <span>Invité</span>
-                    </span>
-                  )}
-                </div>
-
-                {/* Flux Vidéo Réel WebRTC */}
-                <video
-                  ref={(videoEl) => {
-                    if (videoEl && remoteStreams[p.id]) {
-                      if (videoEl.srcObject !== remoteStreams[p.id]) {
-                        videoEl.srcObject = remoteStreams[p.id];
-                      }
-                    }
-                  }}
-                  autoPlay
-                  playsInline
-                  className={`w-full h-full object-cover ${
-                    !p.hasVideo || p.isVideoBlockedByHost || !hasRemoteStream ? 'hidden' : ''
-                  }`}
-                />
-
-                {/* Fallback si caméra éteinte ou flux en attente */}
-                {(!p.hasVideo || p.isVideoBlockedByHost || !hasRemoteStream) && (
-                  <div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-slate-300 gap-1.5">
-                    <div className="w-12 h-12 rounded-full bg-slate-700 flex items-center justify-center font-bold text-lg text-white">
-                      {p.name.charAt(0).toUpperCase()}
-                    </div>
-                    <span className="text-[10px] text-slate-400">
-                      {p.isVideoBlockedByHost
-                        ? 'Caméra bloquée par l’hôte'
-                        : !p.hasVideo
-                        ? 'Caméra coupée'
-                        : 'Connexion vidéo…'}
-                    </span>
-                  </div>
-                )}
-
-                <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between text-[11px] font-semibold text-white bg-slate-900/85 backdrop-blur-xs px-2.5 py-1 rounded-lg border border-slate-700/60">
-                  <span className="truncate max-w-[140px]">{p.name}</span>
-                  <div className="flex items-center gap-1.5">
-                    {p.isMutedByHost || !p.hasAudio ? (
-                      <VolumeX size={13} className="text-rose-400" />
-                    ) : (
-                      <Mic size={13} className="text-emerald-400" />
-                    )}
-                    {!p.canDraw && (
-                      <span title="Lecture seule (Dessin désactivé)">
-                        <Eye size={13} className="text-amber-400" />
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-      </div>
-
-      {/* Barre de Contrôles Média (Ancrée dans la Sidebar — Jamais sur le tableau blanc !) */}
-      <div className="p-3 bg-slate-950/90 border-t border-slate-800 space-y-2.5">
-        <div className="grid grid-cols-4 gap-2">
-          {/* Micro */}
-          <button
-            type="button"
-            onClick={toggleMic}
-            className={`p-2.5 rounded-xl transition-all flex flex-col items-center justify-center gap-1 text-[11px] font-semibold active:scale-95 ${
-              isMicOn
-                ? 'bg-slate-800 hover:bg-slate-700 text-white'
-                : 'bg-rose-600 text-white shadow-lg shadow-rose-600/30'
-            }`}
-            title={isMicOn ? 'Couper le micro' : 'Activer le micro'}
-          >
-            {isMicOn ? <Mic size={18} /> : <MicOff size={18} />}
-            <span>{isMicOn ? 'Micro' : 'Muet'}</span>
-          </button>
-
-          {/* Caméra */}
-          <button
-            type="button"
-            onClick={toggleCam}
-            className={`p-2.5 rounded-xl transition-all flex flex-col items-center justify-center gap-1 text-[11px] font-semibold active:scale-95 ${
-              isCamOn
-                ? 'bg-slate-800 hover:bg-slate-700 text-white'
-                : 'bg-rose-600 text-white shadow-lg shadow-rose-600/30'
-            }`}
-            title={isCamOn ? 'Couper la caméra' : 'Activer la caméra'}
-          >
-            {isCamOn ? <Video size={18} /> : <VideoOff size={18} />}
-            <span>{isCamOn ? 'Caméra' : 'Off'}</span>
-          </button>
-
-          {/* Partage d'écran */}
-          <button
-            type="button"
-            onClick={toggleScreenShare}
-            className={`p-2.5 rounded-xl transition-all flex flex-col items-center justify-center gap-1 text-[11px] font-semibold active:scale-95 ${
-              isScreenSharing ? 'bg-blue-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
-            }`}
-            title="Partager l'écran"
-          >
-            <MonitorUp size={18} />
-            <span>Écran</span>
-          </button>
-
-          {/* Inviter */}
-          <button
-            type="button"
-            onClick={handleCopyMeetLink}
-            className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all flex flex-col items-center justify-center gap-1 text-[11px] font-semibold active:scale-95"
-            title="Copier le lien d'invitation Meet"
-          >
-            {hasCopiedLink ? <Check size={18} className="text-emerald-400" /> : <Copy size={18} />}
-            <span>{hasCopiedLink ? 'Copié' : 'Inviter'}</span>
-          </button>
-        </div>
-
-        {/* Bouton Quitter */}
-        <button
-          type="button"
-          onClick={handleLeave}
-          className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 active:scale-98"
-        >
-          <PhoneOff size={16} />
-          <span>Quitter la réunion</span>
-        </button>
-      </div>
-
-      {/* Section Modération & Liste des Participants (Directement dans la Sidebar !) */}
-      <div className="p-3 bg-slate-900 border-t border-slate-800 space-y-2 max-h-52 overflow-y-auto">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-xs font-bold text-white">
-            <Users size={14} className="text-indigo-400" />
-            <span>Participants ({activeCount})</span>
-          </div>
-
-          {isHost && (
+          <div className="flex items-center gap-1">
             <button
               type="button"
-              onClick={handleMuteAll}
-              className="text-[10px] text-rose-400 hover:text-rose-300 font-semibold flex items-center gap-1 hover:underline"
-              title="Couper tous les micros"
+              onClick={() => setIsMinimized(true)}
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+              title="Réduire la barre latérale"
             >
-              <VolumeX size={12} />
-              <span>Tout muet</span>
+              <Minus size={16} />
             </button>
-          )}
+            <button
+              type="button"
+              onClick={handleLeave}
+              className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg hover:bg-rose-950/40 transition-colors"
+              title="Quitter la réunion"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
-        {/* Liste détaillée */}
-        <div className="space-y-1.5 divide-y divide-slate-800/60">
-          {participants.map((p) => {
-            const isCurrent = p.id === currentUser.id;
-            const isParticipantHost = p.role === 'host' || (hostId ? p.id === hostId : false);
-
-            return (
-              <div key={p.id} className="pt-1.5 flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2">
-                  <div
-                    className={`w-6 h-6 rounded-full text-white font-bold text-[10px] flex items-center justify-center ${
-                      isParticipantHost ? 'bg-amber-600' : 'bg-slate-700'
-                    }`}
-                  >
-                    {p.name.charAt(0).toUpperCase()}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-1">
-                      <span className="font-semibold text-white max-w-[100px] truncate">{p.name}</span>
-                      {isParticipantHost && (
-                        <span className="text-[9px] font-bold text-amber-400">Hôte</span>
-                      )}
-                      {isCurrent && <span className="text-[9px] text-slate-400">(Vous)</span>}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Contrôles de modération Hôte */}
-                {isHost && !isCurrent ? (
+        {/* Demandes d'entrée en Salle d'Attente pour l'Hôte */}
+        {isHost && waitingRoom.length > 0 && (
+          <div className="p-3 bg-indigo-950/60 border-b border-indigo-500/40 space-y-2">
+            <div className="flex items-center gap-1.5 text-indigo-300 font-bold text-xs uppercase tracking-wider">
+              <Sparkles size={14} />
+              <span>Demande d’accès ({waitingRoom.length})</span>
+            </div>
+            <div className="space-y-1.5">
+              {waitingRoom.map((w) => (
+                <div
+                  key={w.id}
+                  className="flex items-center justify-between bg-slate-900/90 px-3 py-2 rounded-xl border border-indigo-500/30 text-xs"
+                >
+                  <span className="font-semibold text-white truncate max-w-[120px]">{w.name}</span>
                   <div className="flex items-center gap-1">
                     <button
                       type="button"
-                      onClick={() => handleToggleParticipantMic(p)}
-                      className={`p-1 rounded-md transition-colors ${
-                        p.isMutedByHost ? 'text-rose-400 bg-rose-500/20' : 'text-slate-400 hover:text-white'
-                      }`}
-                      title={p.isMutedByHost ? 'Débloquer micro' : 'Couper micro'}
+                      onClick={() => handleApproveUser(w.id)}
+                      className="p-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-colors"
+                      title="Autoriser"
                     >
-                      {p.isMutedByHost ? <VolumeX size={13} /> : <Mic size={13} />}
+                      <UserCheck size={14} />
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleToggleParticipantVideo(p)}
-                      className={`p-1 rounded-md transition-colors ${
-                        p.isVideoBlockedByHost ? 'text-rose-400 bg-rose-500/20' : 'text-slate-400 hover:text-white'
-                      }`}
-                      title={p.isVideoBlockedByHost ? 'Débloquer vidéo' : 'Bloquer vidéo'}
+                      onClick={() => handleRejectUser(w.id)}
+                      className="p-1 text-slate-400 hover:text-rose-400 rounded-md transition-colors"
+                      title="Refuser"
                     >
-                      {p.isVideoBlockedByHost ? <VideoOff size={13} /> : <Video size={13} />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleToggleParticipantDraw(p)}
-                      className={`p-1 rounded-md transition-colors ${
-                        !p.canDraw ? 'text-amber-400 bg-amber-500/20' : 'text-slate-400 hover:text-white'
-                      }`}
-                      title={p.canDraw ? 'Passer en lecture seule' : 'Autoriser à dessiner'}
-                    >
-                      {p.canDraw ? <Edit3 size={13} /> : <Eye size={13} />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleKickUser(p.id)}
-                      className="p-1 text-slate-400 hover:text-rose-400 transition-colors"
-                      title="Expulser"
-                    >
-                      <UserX size={13} />
+                      <UserX size={14} />
                     </button>
                   </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Grille des Flux Vidéo (Vous + Autres participants) */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
+          {/* Tuile Vidéo Locale (Vous) */}
+          <div
+            className={`relative w-full aspect-video bg-slate-950 rounded-2xl overflow-hidden shadow-md select-none ${
+              isHost
+                ? 'border-2 border-amber-400 ring-2 ring-amber-400/30'
+                : 'border-2 border-indigo-500/80 ring-2 ring-indigo-500/20'
+            }`}
+          >
+            {/* Badge Rôle en haut à gauche */}
+            <div className="absolute top-2 left-2 z-10">
+              {isHost ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-400 via-amber-500 to-yellow-500 text-slate-950 font-extrabold text-[10px] tracking-wide shadow-md">
+                  <ShieldCheck size={12} className="text-slate-950" />
+                  <span>ADMIN / HÔTE</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800/90 text-slate-300 font-medium text-[10px] border border-slate-700/80">
+                  <span>Invité</span>
+                </span>
+              )}
+            </div>
+
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className={`w-full h-full object-cover ${!isCamOn && 'hidden'}`}
+            />
+            {!isCamOn && (
+              <div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-slate-300 gap-1">
+                <div
+                  className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg text-white shadow-md ${
+                    isHost ? 'bg-amber-600' : 'bg-indigo-600'
+                  }`}
+                >
+                  {(displayName || currentUser.name).charAt(0).toUpperCase()}
+                </div>
+                <span className="text-[10px] text-slate-400">Caméra désactivée</span>
+              </div>
+            )}
+
+            <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between text-[11px] font-semibold text-white bg-slate-900/85 backdrop-blur-xs px-2.5 py-1 rounded-lg border border-slate-700/60">
+              <span className="truncate max-w-[140px]">
+                {displayName || currentUser.name} (Vous)
+              </span>
+              <div className="flex items-center gap-1">
+                {!isMicOn ? (
+                  <VolumeX size={13} className="text-rose-400" />
                 ) : (
-                  <div className="flex items-center gap-1 text-slate-400">
-                    {p.hasAudio && !p.isMutedByHost ? (
-                      <Mic size={13} className="text-emerald-400" />
-                    ) : (
-                      <VolumeX size={13} className="text-rose-400" />
-                    )}
-                    {p.hasVideo && !p.isVideoBlockedByHost ? (
-                      <Video size={13} className="text-indigo-400" />
-                    ) : (
-                      <VideoOff size={13} className="text-slate-500" />
-                    )}
-                  </div>
+                  <Mic size={13} className="text-emerald-400" />
                 )}
               </div>
-            );
-          })}
+            </div>
+          </div>
+
+          {/* Tuiles Vidéo Distantes (WebRTC Live Stream avec audio/vidéo réel) */}
+          {participants
+            .filter((p) => p.id !== currentUser.id)
+            .map((p) => {
+              const isParticipantHost = hostId ? p.id === hostId : p.role === 'host';
+              const targetPeerId = getPeerIdForUser(p.id);
+              const remoteStream = remoteStreams[targetPeerId] || remoteStreams[p.id];
+              const hasVideoTrack =
+                remoteStream &&
+                remoteStream.getVideoTracks().length > 0 &&
+                remoteStream.getVideoTracks().some((t) => t.enabled);
+
+              return (
+                <div
+                  key={p.id}
+                  className={`relative w-full aspect-video bg-slate-950 rounded-2xl overflow-hidden shadow-md select-none ${
+                    isParticipantHost
+                      ? 'border-2 border-amber-400 ring-2 ring-amber-400/30'
+                      : p.isSpeaking
+                      ? 'border-2 border-emerald-400 ring-2 ring-emerald-400/30'
+                      : 'border-2 border-slate-700/80'
+                  }`}
+                >
+                  {/* Badge Rôle */}
+                  <div className="absolute top-2 left-2 z-10">
+                    {isParticipantHost ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-400 via-amber-500 to-yellow-500 text-slate-950 font-extrabold text-[10px] tracking-wide shadow-md">
+                        <ShieldCheck size={12} className="text-slate-950" />
+                        <span>ADMIN / HÔTE</span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800/90 text-slate-300 font-medium text-[10px] border border-slate-700">
+                        <span>Invité</span>
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Vidéo Distante en direct */}
+                  <video
+                    ref={(videoEl) => {
+                      if (videoEl && remoteStream && videoEl.srcObject !== remoteStream) {
+                        videoEl.srcObject = remoteStream;
+                        videoEl.play().catch(() => {});
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    className={`w-full h-full object-cover ${
+                      !p.hasVideo || p.isVideoBlockedByHost || !hasVideoTrack ? 'hidden' : ''
+                    }`}
+                  />
+
+                  {/* Fallback si caméra éteinte ou en cours de connexion */}
+                  {(!p.hasVideo || p.isVideoBlockedByHost || !hasVideoTrack) && (
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-slate-300 gap-1.5">
+                      <div className="w-12 h-12 rounded-full bg-slate-700 flex items-center justify-center font-bold text-lg text-white">
+                        {p.name.charAt(0).toUpperCase()}
+                      </div>
+                      <span className="text-[10px] text-slate-400">
+                        {p.isVideoBlockedByHost
+                          ? 'Caméra bloquée par l’hôte'
+                          : !p.hasVideo
+                          ? 'Caméra coupée'
+                          : remoteStream
+                          ? 'Caméra inactive'
+                          : 'Connexion directe…'}
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between text-[11px] font-semibold text-white bg-slate-900/85 backdrop-blur-xs px-2.5 py-1 rounded-lg border border-slate-700/60">
+                    <span className="truncate max-w-[140px]">{p.name}</span>
+                    <div className="flex items-center gap-1.5">
+                      {p.isMutedByHost || !p.hasAudio ? (
+                        <VolumeX size={13} className="text-rose-400" />
+                      ) : (
+                        <Mic size={13} className="text-emerald-400" />
+                      )}
+                      {!p.canDraw && (
+                        <span title="Lecture seule">
+                          <Eye size={13} className="text-amber-400" />
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
         </div>
-      </div>
-    </aside>
+
+        {/* Barre de Contrôles Média (Dockée dans la Sidebar) */}
+        <div className="p-3 bg-slate-950/90 border-t border-slate-800 space-y-2.5">
+          <div className="grid grid-cols-4 gap-2">
+            {/* Micro */}
+            <button
+              type="button"
+              onClick={toggleMic}
+              className={`p-2.5 rounded-xl transition-all flex flex-col items-center justify-center gap-1 text-[11px] font-semibold active:scale-95 ${
+                isMicOn
+                  ? 'bg-slate-800 hover:bg-slate-700 text-white'
+                  : 'bg-rose-600 text-white shadow-lg shadow-rose-600/30'
+              }`}
+              title={isMicOn ? 'Couper micro' : 'Activer micro'}
+            >
+              {isMicOn ? <Mic size={18} /> : <MicOff size={18} />}
+              <span>{isMicOn ? 'Micro' : 'Muet'}</span>
+            </button>
+
+            {/* Caméra */}
+            <button
+              type="button"
+              onClick={toggleCam}
+              className={`p-2.5 rounded-xl transition-all flex flex-col items-center justify-center gap-1 text-[11px] font-semibold active:scale-95 ${
+                isCamOn
+                  ? 'bg-slate-800 hover:bg-slate-700 text-white'
+                  : 'bg-rose-600 text-white shadow-lg shadow-rose-600/30'
+              }`}
+              title={isCamOn ? 'Couper caméra' : 'Activer caméra'}
+            >
+              {isCamOn ? <Video size={18} /> : <VideoOff size={18} />}
+              <span>{isCamOn ? 'Caméra' : 'Off'}</span>
+            </button>
+
+            {/* Partage d'écran */}
+            <button
+              type="button"
+              onClick={toggleScreenShare}
+              className={`p-2.5 rounded-xl transition-all flex flex-col items-center justify-center gap-1 text-[11px] font-semibold active:scale-95 ${
+                isScreenSharing
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+              }`}
+              title="Partager l'écran"
+            >
+              <MonitorUp size={18} />
+              <span>Écran</span>
+            </button>
+
+            {/* Inviter */}
+            <button
+              type="button"
+              onClick={handleCopyMeetLink}
+              className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all flex flex-col items-center justify-center gap-1 text-[11px] font-semibold active:scale-95"
+              title="Copier le lien d'invitation Meet"
+            >
+              {hasCopiedLink ? <Check size={18} className="text-emerald-400" /> : <Copy size={18} />}
+              <span>{hasCopiedLink ? 'Copié' : 'Inviter'}</span>
+            </button>
+          </div>
+
+          {/* Bouton Quitter */}
+          <button
+            type="button"
+            onClick={handleLeave}
+            className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 active:scale-98"
+          >
+            <PhoneOff size={16} />
+            <span>Quitter la réunion</span>
+          </button>
+        </div>
+
+        {/* Section Modération & Participants */}
+        <div className="p-3 bg-slate-900 border-t border-slate-800 space-y-2 max-h-52 overflow-y-auto">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-white">
+              <Users size={14} className="text-indigo-400" />
+              <span>Participants ({activeCount})</span>
+            </div>
+
+            {isHost && (
+              <button
+                type="button"
+                onClick={handleMuteAll}
+                className="text-[10px] text-rose-400 hover:text-rose-300 font-semibold flex items-center gap-1 hover:underline"
+                title="Couper tous les micros"
+              >
+                <VolumeX size={12} />
+                <span>Tout muet</span>
+              </button>
+            )}
+          </div>
+
+          <div className="space-y-1.5 divide-y divide-slate-800/60">
+            {participants.map((p) => {
+              const isCurrent = p.id === currentUser.id;
+              const isParticipantHost = hostId ? p.id === hostId : p.role === 'host';
+
+              return (
+                <div key={p.id} className="pt-1.5 flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <div
+                      className={`w-6 h-6 rounded-full text-white font-bold text-[10px] flex items-center justify-center ${
+                        isParticipantHost ? 'bg-amber-600' : 'bg-slate-700'
+                      }`}
+                    >
+                      {p.name.charAt(0).toUpperCase()}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1">
+                        <span className="font-semibold text-white max-w-[100px] truncate">{p.name}</span>
+                        {isParticipantHost && (
+                          <span className="text-[9px] font-bold text-amber-400">Hôte</span>
+                        )}
+                        {isCurrent && <span className="text-[9px] text-slate-400">(Vous)</span>}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Contrôles de modération Hôte */}
+                  {isHost && !isCurrent ? (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleParticipantMic(p)}
+                        className={`p-1 rounded-md transition-colors ${
+                          p.isMutedByHost ? 'text-rose-400 bg-rose-500/20' : 'text-slate-400 hover:text-white'
+                        }`}
+                        title={p.isMutedByHost ? 'Débloquer micro' : 'Couper micro'}
+                      >
+                        {p.isMutedByHost ? <VolumeX size={13} /> : <Mic size={13} />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleParticipantVideo(p)}
+                        className={`p-1 rounded-md transition-colors ${
+                          p.isVideoBlockedByHost ? 'text-rose-400 bg-rose-500/20' : 'text-slate-400 hover:text-white'
+                        }`}
+                        title={p.isVideoBlockedByHost ? 'Débloquer vidéo' : 'Bloquer vidéo'}
+                      >
+                        {p.isVideoBlockedByHost ? <VideoOff size={13} /> : <Video size={13} />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleParticipantDraw(p)}
+                        className={`p-1 rounded-md transition-colors ${
+                          !p.canDraw ? 'text-amber-400 bg-amber-500/20' : 'text-slate-400 hover:text-white'
+                        }`}
+                        title={p.canDraw ? 'Passer en lecture seule' : 'Autoriser à dessiner'}
+                      >
+                        {p.canDraw ? <Edit3 size={13} /> : <Eye size={13} />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleKickUser(p.id)}
+                        className="p-1 text-slate-400 hover:text-rose-400 transition-colors"
+                        title="Expulser"
+                      >
+                        <UserX size={13} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 text-slate-400">
+                      {p.hasAudio && !p.isMutedByHost ? (
+                        <Mic size={13} className="text-emerald-400" />
+                      ) : (
+                        <VolumeX size={13} className="text-rose-400" />
+                      )}
+                      {p.hasVideo && !p.isVideoBlockedByHost ? (
+                        <Video size={13} className="text-indigo-400" />
+                      ) : (
+                        <VideoOff size={13} className="text-slate-500" />
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </aside>
+    </>
   );
 }
