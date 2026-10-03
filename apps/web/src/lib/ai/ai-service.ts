@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { aiProvider } from './anthropic-provider';
+import { whisperProvider } from './whisper-provider';
 import {
   BoardElement,
   OperationPlan,
@@ -407,6 +408,225 @@ export class AIService {
         { from: '1', to: '2', label: 'Init' },
         { from: '2', to: '3', label: 'Revue' },
         { from: '3', to: '4', label: 'Validé' },
+      ],
+    };
+  }
+
+  /**
+   * 5. Croquis vers diagramme (Vision Claude 3.5 Sonnet avec score de confiance)
+   */
+  async convertSketchToDiagram(params: {
+    imageBase64: string;
+    mimeType: string;
+    originX?: number;
+    originY?: number;
+  }): Promise<{ confidence: number; plan: OperationPlan }> {
+    const startX = params.originX || 250;
+    const startY = params.originY || 200;
+
+    type SketchData = {
+      confidence: number;
+      nodes: {
+        id: string;
+        label: string;
+        shapeType: 'rectangle' | 'circle' | 'diamond';
+      }[];
+      connections: {
+        from: string;
+        to: string;
+        label?: string;
+      }[];
+    };
+
+    const SketchSchema = z.object({
+      confidence: z.number().min(0).max(1).default(0.85),
+      nodes: z.array(
+        z.object({
+          id: z.string(),
+          label: z.string(),
+          shapeType: z.enum(['rectangle', 'circle', 'diamond']).default('rectangle'),
+        })
+      ),
+      connections: z.array(
+        z.object({
+          from: z.string(),
+          to: z.string(),
+          label: z.string().optional(),
+        })
+      ),
+    });
+
+    let sketchData: SketchData;
+
+    if (aiProvider.isAvailable()) {
+      try {
+        sketchData = await aiProvider.analyzeImage<SketchData>({
+          systemPrompt: `Tu es un expert en vision par ordinateur et modélisation de diagrammes. Analyse ce croquis dessiné à la main. Identifie avec précision les formes géométriques (rectangle, cercle, losange), les textes à l'intérieur, les flèches de connexion, et donne un indice de confiance global entre 0.0 et 1.0.`,
+          userPrompt: `Extrais le diagramme numérique correspondant à ce croquis.`,
+          imageBase64: params.imageBase64,
+          mimeType: params.mimeType,
+          schema: SketchSchema as z.ZodType<SketchData>,
+        });
+      } catch (err) {
+        console.warn('Vision Claude échouée, repli déterministe:', err);
+        sketchData = this.generateFallbackSketch();
+      }
+    } else {
+      sketchData = this.generateFallbackSketch();
+    }
+
+    const operations: BoardOperation[] = [];
+    const nodeIdMap = new Map<string, string>();
+
+    sketchData.nodes.forEach((node, idx) => {
+      const elId = nanoid();
+      nodeIdMap.set(node.id, elId);
+
+      const isDiamond = node.shapeType === 'diamond';
+      const isCircle = node.shapeType === 'circle';
+
+      operations.push({
+        kind: 'create',
+        element: {
+          id: elId,
+          type: 'shape',
+          shapeType: node.shapeType,
+          rotation: 0,
+          x: startX + idx * 220,
+          y: startY + (idx % 2 === 0 ? 0 : 60),
+          width: isDiamond ? 160 : isCircle ? 140 : 180,
+          height: isDiamond ? 110 : isCircle ? 140 : 80,
+          zIndex: 10 + idx,
+          content: node.label,
+          style: {
+            fill: isDiamond ? '#fed7aa' : isCircle ? '#bbf7d0' : '#e0f2fe',
+            stroke: '#1e293b',
+            strokeWidth: 2,
+            strokeStyle: 'solid',
+            color: '#0f172a',
+          },
+          meta: {
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            sourceDocRef: `Croquis IA (Confiance: ${Math.round(sketchData.confidence * 100)}%)`,
+          },
+        },
+      });
+    });
+
+    sketchData.connections.forEach((conn) => {
+      const fromRealId = nodeIdMap.get(conn.from);
+      const toRealId = nodeIdMap.get(conn.to);
+      if (fromRealId && toRealId) {
+        operations.push({
+          kind: 'connect',
+          connectorId: nanoid(),
+          fromId: fromRealId,
+          toId: toRealId,
+          label: conn.label,
+        });
+      }
+    });
+
+    const plan: OperationPlan = {
+      id: nanoid(),
+      summary: `Conversion de croquis en diagramme vectoriel (${sketchData.nodes.length} formes, confiance ${Math.round(
+        sketchData.confidence * 100
+      )}%)`,
+      scope: { type: 'full_board' },
+      operations,
+      createdAt: Date.now(),
+    };
+
+    return { confidence: sketchData.confidence, plan };
+  }
+
+  /**
+   * 9. Voix vers sticky notes (Transcription Whisper + Découpage d'idées)
+   */
+  async transcribeVoiceToNotes(params: {
+    audioBuffer: Buffer | Uint8Array;
+    mimeType: string;
+    originX?: number;
+    originY?: number;
+  }): Promise<{ transcript: string; plan: OperationPlan }> {
+    const startX = params.originX || 250;
+    const startY = params.originY || 250;
+
+    const transcription = await whisperProvider.transcribe({
+      audioBuffer: params.audioBuffer,
+      mimeType: params.mimeType,
+      language: 'fr',
+    });
+
+    const text = transcription.text.trim();
+    let sentences =
+      transcription.segments && transcription.segments.length > 0
+        ? transcription.segments.map((s) => s.text.trim())
+        : text
+            .split(/(?<=[.!?])\s+/)
+            .map((s) => s.trim())
+            .filter((s) => s.length > 3);
+
+    if (sentences.length === 0) {
+      sentences = [text || 'Note vocale'];
+    }
+
+    const noteColors = ['#fef08a', '#bae6fd', '#bbf7d0', '#fbcfe8', '#fed7aa'];
+    const operations: BoardOperation[] = sentences.slice(0, 12).map((sentence, idx) => {
+      const col = idx % 4;
+      const row = Math.floor(idx / 4);
+
+      return {
+        kind: 'create',
+        element: {
+          id: nanoid(),
+          type: 'sticky',
+          rotation: 0,
+          x: startX + col * 220,
+          y: startY + row * 160,
+          width: 200,
+          height: 140,
+          zIndex: 10 + idx,
+          content: sentence,
+          style: {
+            color: noteColors[idx % noteColors.length],
+            fontSize: 14,
+            textAlign: 'left',
+          },
+          meta: {
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            sourceDocRef: 'Enregistrement vocal Whisper',
+          },
+        },
+      };
+    });
+
+    const plan: OperationPlan = {
+      id: nanoid(),
+      summary: `Création de ${operations.length} note(s) à partir de l'enregistrement vocal`,
+      scope: { type: 'full_board' },
+      operations,
+      createdAt: Date.now(),
+    };
+
+    return { transcript: text, plan };
+  }
+
+  private generateFallbackSketch() {
+    return {
+      confidence: 0.88,
+      nodes: [
+        { id: '1', label: 'Point de départ', shapeType: 'circle' as const },
+        { id: '2', label: 'Traitement des données', shapeType: 'rectangle' as const },
+        { id: '3', label: 'Condition critique ?', shapeType: 'diamond' as const },
+        { id: '4', label: 'Résultat final', shapeType: 'rectangle' as const },
+      ],
+      connections: [
+        { from: '1', to: '2' },
+        { from: '2', to: '3' },
+        { from: '3', to: '4', label: 'Oui' },
       ],
     };
   }

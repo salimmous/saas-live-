@@ -28,6 +28,9 @@ import { VoteModal } from '../panels/VoteModal';
 import { BrainstormModal } from '../panels/BrainstormModal';
 import { PresentationOverlay } from '../panels/PresentationOverlay';
 import { LinkPreviewModal } from './LinkPreviewModal';
+import { TourModal } from './TourModal';
+import { TourPlayerOverlay } from './TourPlayerOverlay';
+import { HistoryModal } from './HistoryModal';
 import { computeAutoLayout } from '@whiteboard/shared';
 
 interface CanvasProps {
@@ -103,6 +106,18 @@ export function Canvas({
   const [activeVoteSession, setActiveVoteSession] = useState<any>(null);
   const [isVotingActive, setIsVotingActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Visites commentées & Historique (Phase 4)
+  const [showTourModal, setShowTourModal] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [activeTour, setActiveTour] = useState<any | null>(null);
+  const [isRecordingTour, setIsRecordingTour] = useState(false);
+  const [recordingTourTitle, setRecordingTourTitle] = useState('Visite guidée');
+  const [recordingDuration, setRecordingDuration] = useState(0);
+
+  const tourTrajectoryRef = useRef<any[]>([]);
+  const recordingStartRef = useRef<number>(0);
+  const lastMouseRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   // États d'interaction
   const [isPanning, setIsPanning] = useState(false);
@@ -269,6 +284,78 @@ export function Canvas({
         x: prev.x - e.deltaX,
         y: prev.y - e.deltaY,
       }));
+    }
+  };
+
+  // Gestion de la capture de visite guidée (Phase 4)
+  const handleStartRecordingTour = (title: string) => {
+    setRecordingTourTitle(title);
+    setIsRecordingTour(true);
+    setRecordingDuration(0);
+    recordingStartRef.current = Date.now();
+    tourTrajectoryRef.current = [
+      {
+        t: 0,
+        x: viewport.x,
+        y: viewport.y,
+        zoom: viewport.zoom,
+        cursorX: lastMouseRef.current.x,
+        cursorY: lastMouseRef.current.y,
+      },
+    ];
+  };
+
+  const handleStopRecordingTour = async () => {
+    if (!isRecordingTour) return;
+    setIsRecordingTour(false);
+    const duration = Math.max(1, (Date.now() - recordingStartRef.current) / 1000);
+    try {
+      await fetch(`/api/boards/${boardId}/tours`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: recordingTourTitle,
+          duration: Math.round(duration * 10) / 10,
+          trajectoryData: tourTrajectoryRef.current,
+        }),
+      });
+    } catch (err) {
+      console.error('Erreur sauvegarde visite:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (!isRecordingTour) return;
+    const interval = setInterval(() => {
+      const elapsed = (Date.now() - recordingStartRef.current) / 1000;
+      setRecordingDuration(elapsed);
+      tourTrajectoryRef.current.push({
+        t: Math.round(elapsed * 100) / 100,
+        x: viewport.x,
+        y: viewport.y,
+        zoom: viewport.zoom,
+        cursorX: lastMouseRef.current.x,
+        cursorY: lastMouseRef.current.y,
+      });
+    }, 100);
+    return () => clearInterval(interval);
+  }, [isRecordingTour, viewport]);
+
+  // Restauration d'historique (Phase 4)
+  const handleRestoreVersion = (restoredElements: BoardElement[]) => {
+    if (onBatchOperations) {
+      const deleteOps = elementsArray.map((el) => ({
+        kind: 'delete' as const,
+        elementId: el.id,
+      }));
+      const createOps = restoredElements.map((el) => ({
+        kind: 'create' as const,
+        element: el,
+      }));
+      onBatchOperations([...deleteOps, ...createOps]);
+    } else {
+      onDeleteElements(elementsArray.map((el) => el.id));
+      restoredElements.forEach((el) => onAddElement(el));
     }
   };
 
@@ -626,6 +713,7 @@ export function Canvas({
     const rect = containerRef.current?.getBoundingClientRect();
     const mouseX = e.clientX - (rect?.left || 0);
     const mouseY = e.clientY - (rect?.top || 0);
+    lastMouseRef.current = { x: mouseX, y: mouseY };
     const worldPoint = screenToWorld(mouseX, mouseY);
 
     // Diffuser la position du curseur aux collaborateurs (throttlé à 20fps)
@@ -1038,7 +1126,25 @@ export function Canvas({
         onStartPresentation={onStartPresentation || (() => setShowPresentation(true))}
         onOpenVoteModal={onOpenVoteModal || (() => setShowVoteModal(true))}
         onOpenBrainstormModal={onOpenBrainstormModal || (() => setShowBrainstormModal(true))}
+        onOpenTourModal={() => setShowTourModal(true)}
+        onOpenHistoryModal={() => setShowHistoryModal(true)}
       />
+
+      {/* Bannière Enregistrement de Visite en direct */}
+      {isRecordingTour && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-rose-600/95 backdrop-blur-md text-white px-5 py-2 rounded-full shadow-lg border border-rose-400/40 flex items-center gap-3 z-40 text-xs font-medium animate-in fade-in slide-in-from-top-4">
+          <span className="w-2.5 h-2.5 rounded-full bg-white animate-ping" />
+          <span>
+            Enregistrement en direct : <strong>{recordingTourTitle}</strong> ({Math.floor(recordingDuration)}s)
+          </span>
+          <button
+            onClick={handleStopRecordingTour}
+            className="px-2.5 py-1 bg-white text-rose-700 hover:bg-rose-50 rounded-full text-[11px] font-bold transition-colors ml-1"
+          >
+            Terminer
+          </button>
+        </div>
+      )}
 
       {/* Bannière Mode Vote Actif */}
       {isVotingActive && activeVoteSession && (
@@ -1300,6 +1406,34 @@ export function Canvas({
           x: (screen.width / 2 - viewport.x) / viewport.zoom,
           y: (screen.height / 2 - viewport.y) / viewport.zoom,
         }}
+      />
+
+      {/* Lecteur de visite animée (Phase 4) */}
+      <TourPlayerOverlay
+        tour={activeTour}
+        onClose={() => setActiveTour(null)}
+        onSetViewport={(vp) => setViewport(vp)}
+      />
+
+      {/* Modale de visites commentées (Phase 4) */}
+      <TourModal
+        isOpen={showTourModal}
+        onClose={() => setShowTourModal(false)}
+        boardId={boardId}
+        onPlayTour={(tour) => setActiveTour(tour)}
+        isRecordingTour={isRecordingTour}
+        onStartRecordingTour={handleStartRecordingTour}
+        onStopRecordingTour={handleStopRecordingTour}
+        recordingDuration={recordingDuration}
+      />
+
+      {/* Modale d'historique et snapshots (Phase 4) */}
+      <HistoryModal
+        isOpen={showHistoryModal}
+        onClose={() => setShowHistoryModal(false)}
+        boardId={boardId}
+        elements={elementsArray}
+        onRestoreVersion={handleRestoreVersion}
       />
 
       {/* Modale d'aide des raccourcis */}

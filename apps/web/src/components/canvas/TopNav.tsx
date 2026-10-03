@@ -13,6 +13,8 @@ import {
   Play,
   Vote,
   Lightbulb,
+  Video,
+  History,
 } from 'lucide-react';
 import { SyncState } from '@/hooks/useBoardSync';
 import { UserPresence } from '@whiteboard/shared';
@@ -30,6 +32,8 @@ interface TopNavProps {
   onStartPresentation?: () => void;
   onOpenVoteModal?: () => void;
   onOpenBrainstormModal?: () => void;
+  onOpenTourModal?: () => void;
+  onOpenHistoryModal?: () => void;
 }
 
 export function TopNav({
@@ -45,6 +49,8 @@ export function TopNav({
   onStartPresentation,
   onOpenVoteModal,
   onOpenBrainstormModal,
+  onOpenTourModal,
+  onOpenHistoryModal,
 }: TopNavProps) {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [boardTitle, setBoardTitle] = useState(title);
@@ -160,6 +166,32 @@ export function TopNav({
           >
             <Lightbulb size={16} />
             <span>Brouillons</span>
+          </button>
+        )}
+
+        {/* Visites enregistrées (Phase 4) */}
+        {onOpenTourModal && (
+          <button
+            type="button"
+            onClick={onOpenTourModal}
+            className="p-2 text-slate-600 hover:text-purple-600 hover:bg-purple-50 rounded-xl transition-colors hidden lg:flex items-center gap-1 text-xs font-semibold"
+            title="Visites commentées & Enregistrements"
+          >
+            <Video size={16} />
+            <span>Visites</span>
+          </button>
+        )}
+
+        {/* Historique des versions (Phase 4) */}
+        {onOpenHistoryModal && (
+          <button
+            type="button"
+            onClick={onOpenHistoryModal}
+            className="p-2 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors hidden lg:flex items-center gap-1 text-xs font-semibold"
+            title="Historique des versions et restauration"
+          >
+            <History size={16} />
+            <span>Historique</span>
           </button>
         )}
 

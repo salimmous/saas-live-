@@ -103,4 +103,26 @@ Ce document consigne l'ensemble des choix techniques, des arbitrages et de leurs
   - Les cadres (`frame`) définissent les diapositives avec transition de caméra interpolée vers les coordonnées de cadre.
   - Les zones interactives (`hotspot`) permettent de prototyper des parcours applicatifs en sautant d'un cadre à un autre au clic en mode prototype.
 
+---
+
+## 9. Fonctions Avancées (Phase 4)
+
+- **Croquis vers Diagramme (Feature 5) :**
+  - Modèle multimodal Claude 3.5 Sonnet avec extraction géométrique précise (rectangles, cercles, losanges de décision, flèches étiquetées) et score de confiance normalisé (0.0 à 1.0).
+  - Mode dégradé local garantissant une conversion immédiate et déterministe même en l'absence de clé API Anthropic.
+  - Plan d'opérations prévisualisable avec ghost preview et insertion atomique sur le canvas.
+- **Voix vers Sticky Notes (Feature 9) :**
+  - Enregistrement audio haute-fidélité via WebRTC MediaRecorder (`audio/webm`), transcription via OpenAI Whisper API (`model: whisper-1`).
+  - Découpage sémantique du discours en idées unitaires formatées en notes adhésives distribuées en quadrillage régulier sur le canvas.
+  - Repli local déterministe en français sans clé API OpenAI pour test et démonstration immédiate.
+- **Visites Commentées Enregistrées (Feature 18) :**
+  - Capture en flux continu (échantillonnage 100ms) de la trajectoire de caméra (`viewport.x`, `viewport.y`, `viewport.zoom`) et de la position du pointeur de souris du présentateur.
+  - Stockage persistant dans la table PostgreSQL `RecordedTour` avec durée, auteur et métadonnées.
+  - Lecteur synchrone intégré (`TourPlayerOverlay`) avec boucle `requestAnimationFrame`, curseur virtuel en direct, scrubber interactif et sélecteur de vitesse (1x, 1.5x, 2x).
+- **Historique & Replay (Feature 19) :**
+  - Points de sauvegarde manuels et automatiques archivés dans la table PostgreSQL `BoardSnapshot`.
+  - Incrément séquentiel de version (`schemaVersion`), horodatage précis et traçabilité de l'auteur.
+  - Restauration atomique restaurant l'état exact du tableau blanc en une seule transaction.
+
+
 

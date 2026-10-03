@@ -15,6 +15,9 @@ import {
   Network,
   AlignLeft,
   Loader2,
+  PenTool,
+  Mic,
+  MicOff,
 } from 'lucide-react';
 import { BoardElement, BoardOperation, OperationPlan } from '@whiteboard/shared';
 
@@ -28,7 +31,7 @@ interface AiPanelProps {
   onFocusElement?: (id: string) => void;
 }
 
-type TabType = 'diagram' | 'natural' | 'cluster' | 'doc' | 'ask' | 'action';
+type TabType = 'diagram' | 'natural' | 'cluster' | 'doc' | 'ask' | 'action' | 'sketch' | 'voice';
 
 export function AiPanel({
   isOpen,
@@ -55,6 +58,15 @@ export function AiPanel({
 
   const [question, setQuestion] = useState('Quelles sont les priorités identifiées ?');
   const [qaResult, setQaResult] = useState<{ answer: string; referencedIds: string[] } | null>(null);
+
+  // Croquis vers diagramme (Feature 5)
+  const [sketchFile, setSketchFile] = useState<File | null>(null);
+  const [sketchConfidence, setSketchConfidence] = useState<number | null>(null);
+
+  // Voix vers sticky notes (Feature 9)
+  const [isRecording, setIsRecording] = useState(false);
+  const [recorder, setRecorder] = useState<MediaRecorder | null>(null);
+  const [voiceTranscript, setVoiceTranscript] = useState<string | null>(null);
 
   // Aperçu du plan d'opérations avant application
   const [pendingPlan, setPendingPlan] = useState<OperationPlan | null>(null);
@@ -215,6 +227,84 @@ export function AiPanel({
     }
   };
 
+  // 7. Croquis vers diagramme (Feature 5)
+  const handleSketchSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sketchFile) return;
+    setLoading(true);
+    setError(null);
+    setSketchConfidence(null);
+
+    try {
+      const fd = new FormData();
+      fd.append('file', sketchFile);
+      const res = await fetch('/api/ai/sketch-to-diagram', {
+        method: 'POST',
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
+      setSketchConfidence(data.confidence);
+      setPendingPlan(data.plan);
+      setSketchFile(null);
+    } catch (err: any) {
+      setError(err.message || 'Erreur lors de l’analyse du croquis.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 8. Voix vers sticky notes (Feature 9)
+  const startRecording = async () => {
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      rec.onstop = async () => {
+        stream.getTracks().forEach((track) => track.stop());
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        setLoading(true);
+        try {
+          const fd = new FormData();
+          fd.append('file', blob, 'recording.webm');
+          const res = await fetch('/api/ai/voice-to-notes', {
+            method: 'POST',
+            body: fd,
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error);
+          setVoiceTranscript(data.transcript);
+          setPendingPlan(data.plan);
+        } catch (err: any) {
+          setError(err.message || 'Erreur transcription vocale.');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      rec.start();
+      setRecorder(rec);
+      setIsRecording(true);
+    } catch (err: any) {
+      setError('Accès au microphone refusé ou non supporté.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (recorder && isRecording) {
+      recorder.stop();
+      setIsRecording(false);
+      setRecorder(null);
+    }
+  };
+
   // Application du plan d'opérations validé par l'utilisateur (Moteur d'actions unique)
   const confirmApplyPlan = () => {
     if (pendingPlan) {
@@ -239,61 +329,79 @@ export function AiPanel({
         </button>
       </div>
 
-      {/* Onglets des fonctionnalités IA (Phase 2) */}
-      <div className="grid grid-cols-6 border-b border-slate-100 text-xs bg-slate-50/40 p-1 gap-1">
+      {/* Onglets des fonctionnalités IA (Phases 2 & 4) */}
+      <div className="grid grid-cols-8 border-b border-slate-100 text-xs bg-slate-50/40 p-1 gap-0.5">
         <button
           onClick={() => setActiveTab('diagram')}
-          className={`p-2 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
+          className={`p-1.5 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
             activeTab === 'diagram' ? 'bg-white shadow-xs text-purple-700' : 'text-slate-500 hover:text-slate-800'
           }`}
           title="Diagramme"
         >
-          <Network size={15} />
+          <Network size={14} />
         </button>
         <button
           onClick={() => setActiveTab('natural')}
-          className={`p-2 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
+          className={`p-1.5 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
             activeTab === 'natural' ? 'bg-white shadow-xs text-purple-700' : 'text-slate-500 hover:text-slate-800'
           }`}
           title="Commande naturelle"
         >
-          <AlignLeft size={15} />
+          <AlignLeft size={14} />
         </button>
         <button
           onClick={() => setActiveTab('cluster')}
-          className={`p-2 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
+          className={`p-1.5 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
             activeTab === 'cluster' ? 'bg-white shadow-xs text-purple-700' : 'text-slate-500 hover:text-slate-800'
           }`}
           title="Regrouper"
         >
-          <Layers size={15} />
+          <Layers size={14} />
         </button>
         <button
           onClick={() => setActiveTab('doc')}
-          className={`p-2 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
+          className={`p-1.5 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
             activeTab === 'doc' ? 'bg-white shadow-xs text-purple-700' : 'text-slate-500 hover:text-slate-800'
           }`}
           title="Doc vers tableau"
         >
-          <FileText size={15} />
+          <FileText size={14} />
         </button>
         <button
           onClick={() => setActiveTab('ask')}
-          className={`p-2 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
+          className={`p-1.5 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
             activeTab === 'ask' ? 'bg-white shadow-xs text-purple-700' : 'text-slate-500 hover:text-slate-800'
           }`}
           title="Questions"
         >
-          <HelpCircle size={15} />
+          <HelpCircle size={14} />
         </button>
         <button
           onClick={() => setActiveTab('action')}
-          className={`p-2 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
+          className={`p-1.5 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
             activeTab === 'action' ? 'bg-white shadow-xs text-purple-700' : 'text-slate-500 hover:text-slate-800'
           }`}
           title="Plan d'action"
         >
-          <ListTodo size={15} />
+          <ListTodo size={14} />
+        </button>
+        <button
+          onClick={() => setActiveTab('sketch')}
+          className={`p-1.5 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
+            activeTab === 'sketch' ? 'bg-white shadow-xs text-purple-700' : 'text-slate-500 hover:text-slate-800'
+          }`}
+          title="Croquis vers diagramme (Phase 4)"
+        >
+          <PenTool size={14} />
+        </button>
+        <button
+          onClick={() => setActiveTab('voice')}
+          className={`p-1.5 rounded-xl flex flex-col items-center justify-center gap-1 font-medium transition-all ${
+            activeTab === 'voice' ? 'bg-white shadow-xs text-purple-700' : 'text-slate-500 hover:text-slate-800'
+          }`}
+          title="Voix vers notes (Phase 4)"
+        >
+          <Mic size={14} />
         </button>
       </div>
 
@@ -502,6 +610,91 @@ export function AiPanel({
               {loading ? <Loader2 size={14} className="animate-spin" /> : <ListTodo size={14} />}
               <span>Transformer en plan d&apos;action ({selectedIds.length})</span>
             </button>
+          </div>
+        )}
+
+        {/* 7. Croquis vers diagramme (Feature 5) */}
+        {activeTab === 'sketch' && (
+          <form onSubmit={handleSketchSubmit} className="space-y-3">
+            <div>
+              <label className="font-semibold text-slate-700 block mb-1">
+                Photo ou image d&apos;un croquis manuscrit
+              </label>
+              <p className="text-[11px] text-slate-500 mb-2 leading-relaxed">
+                Importez une photo d&apos;un schéma sur tableau blanc ou sur papier. La vision IA
+                détecte les formes géométriques, flèches et textes pour les convertir en objets vectoriels éditables.
+              </p>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => setSketchFile(e.target.files?.[0] || null)}
+                className="w-full text-xs file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"
+              />
+            </div>
+
+            {sketchConfidence !== null && (
+              <div className="p-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl flex items-center justify-between text-[11px]">
+                <span className="font-medium">Score de confiance IA :</span>
+                <span className="font-bold">{Math.round(sketchConfidence * 100)}%</span>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading || !sketchFile}
+              className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-semibold rounded-xl transition-all flex items-center justify-center gap-1.5"
+            >
+              {loading ? <Loader2 size={14} className="animate-spin" /> : <PenTool size={14} />}
+              <span>Convertir en diagramme vectoriel</span>
+            </button>
+          </form>
+        )}
+
+        {/* 8. Voix vers sticky notes (Feature 9) */}
+        {activeTab === 'voice' && (
+          <div className="space-y-4">
+            <p className="text-slate-500 leading-relaxed">
+              Enregistrez vos pensées à haute voix. Whisper transcrit et l&apos;IA segmente
+              intelligemment votre discours en notes adhésives structurées par idée.
+            </p>
+
+            <div className="flex flex-col items-center justify-center p-6 bg-slate-50 border border-slate-200 rounded-2xl gap-3">
+              {isRecording ? (
+                <button
+                  type="button"
+                  onClick={stopRecording}
+                  className="w-16 h-16 rounded-full bg-rose-600 hover:bg-rose-700 text-white flex items-center justify-center shadow-lg animate-pulse transition-all"
+                  title="Arrêter l'enregistrement"
+                >
+                  <MicOff size={24} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={startRecording}
+                  disabled={loading}
+                  className="w-16 h-16 rounded-full bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white flex items-center justify-center shadow-lg transition-all active:scale-95"
+                  title="Démarrer l'enregistrement vocal"
+                >
+                  {loading ? <Loader2 size={24} className="animate-spin" /> : <Mic size={24} />}
+                </button>
+              )}
+
+              <span className="text-xs font-semibold text-slate-700">
+                {isRecording
+                  ? 'Enregistrement en cours... Cliquez pour terminer'
+                  : loading
+                  ? 'Transcription Whisper en cours...'
+                  : 'Cliquez pour parler'}
+              </span>
+            </div>
+
+            {voiceTranscript && (
+              <div className="p-3 bg-purple-50/70 border border-purple-200 rounded-xl space-y-1">
+                <div className="font-semibold text-purple-900 text-[11px]">Transcription brute :</div>
+                <p className="text-slate-700 text-[11px] italic leading-relaxed">« {voiceTranscript} »</p>
+              </div>
+            )}
           </div>
         )}
       </div>
