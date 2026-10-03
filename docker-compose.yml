@@ -55,7 +55,7 @@ services:
   sync:
     build:
       context: .
-      dockerfile: ./apps/sync/Dockerfile
+      dockerfile: ./docker/sync.Dockerfile
     container_name: whiteboard-sync
     restart: unless-stopped
     depends_on:
@@ -71,7 +71,7 @@ services:
   web:
     build:
       context: .
-      dockerfile: ./apps/web/Dockerfile
+      dockerfile: ./docker/web.Dockerfile
     container_name: whiteboard-web
     restart: unless-stopped
     depends_on:

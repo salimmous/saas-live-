@@ -1,0 +1,8 @@
+# Exclure les conteneurs et daemons locaux pour Vercel
+docker/
+apps/sync/
+*.Dockerfile
+Dockerfile*
+docker-compose*.yml
+.env.local
+.env
