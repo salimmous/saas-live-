@@ -1,0 +1,27 @@
+{
+  "name": "collaborative-whiteboard-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.7.0",
+  "scripts": {
+    "build": "pnpm -r --filter=!./tests/* run build",
+    "dev": "pnpm --parallel run dev",
+    "dev:web": "pnpm --filter web dev",
+    "dev:sync": "pnpm --filter sync dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "typecheck": "pnpm -r run typecheck",
+    "lint": "pnpm --filter web run lint",
+    "db:generate": "pnpm --filter @whiteboard/shared db:generate",
+    "db:migrate": "pnpm --filter @whiteboard/shared db:migrate",
+    "db:push": "pnpm --filter @whiteboard/shared db:push",
+    "db:seed": "pnpm --filter @whiteboard/shared db:seed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^22.13.1",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

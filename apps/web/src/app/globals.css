@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground: #0f172a;
+  --background: #f8fafc;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Grille de points pour le canvas infini */
+.canvas-grid {
+  background-color: #f8fafc;
+  background-image: radial-gradient(#cbd5e1 1.2px, transparent 1.2px);
+  background-size: 24px 24px;
+}
+
+/* Couche monde matériellement accélérée */
+.canvas-world {
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/* Connecteurs SVG et interactions */
+.connector-path {
+  fill: none;
+  transition: stroke 0.15s ease;
+}
+
+.connector-path:hover {
+  stroke-width: 4px;
+}
+
+/* Boîte de sélection multiple */
+.selection-box {
+  background-color: rgba(59, 130, 246, 0.08);
+  border: 1px solid #3b82f6;
+  pointer-events: none;
+}
+
+/* Poignées de redimensionnement */
+.resize-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background-color: #ffffff;
+  border: 2px solid #3b82f6;
+  border-radius: 2px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  z-index: 50;
+}
+
+/* Textarea éditable dans les notes */
+.editable-note-text {
+  user-select: text;
+  -webkit-user-select: text;
+  outline: none;
+  border: none;
+  background: transparent;
+  resize: none;
+  width: 100%;
+  height: 100%;
+  font-family: inherit;
+}
+
+/* Animations légères */
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

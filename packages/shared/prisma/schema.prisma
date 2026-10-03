@@ -1,0 +1,285 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -------------------------------------------------------------
+// Better Auth - Tables de base
+// -------------------------------------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  sessions      Session[]
+  accounts      Account[]
+  ownedBoards   Board[]       @relation("BoardOwner")
+  memberships   BoardMember[]
+  votes         Vote[]
+  drafts        BrainstormDraft[]
+  recordedTours RecordedTour[]
+  aiJobs        AiJob[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("verification")
+}
+
+// -------------------------------------------------------------
+// Modèle Métier - Tableaux, Collaboration & Rôles
+// -------------------------------------------------------------
+
+model Board {
+  id          String        @id @default(cuid())
+  title       String        @default("Tableau sans titre")
+  description String?
+  ownerId     String
+  owner       User          @relation("BoardOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  isPublic    Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  members     BoardMember[]
+  guestLinks  GuestLink[]
+  snapshots   BoardSnapshot[]
+  updates     BoardUpdate[]
+  votes       VoteSession[]
+  drafts      BrainstormDraft[]
+  assets      Asset[]
+  tours       RecordedTour[]
+  aiJobs      AiJob[]
+
+  @@index([ownerId])
+  @@map("boards")
+}
+
+enum BoardRole {
+  owner
+  editor
+  reader
+}
+
+model BoardMember {
+  id        String    @id @default(cuid())
+  boardId   String
+  board     Board     @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      BoardRole @default(editor)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([boardId, userId])
+  @@index([userId])
+  @@map("board_members")
+}
+
+model GuestLink {
+  id         String    @id @default(cuid())
+  boardId    String
+  board      Board     @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  role       BoardRole @default(reader)
+  name       String?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([boardId])
+  @@map("guest_links")
+}
+
+// -------------------------------------------------------------
+// Persistance Yjs - Snapshots et Mises à jour incrémentales
+// -------------------------------------------------------------
+
+model BoardSnapshot {
+  id            String   @id @default(cuid())
+  boardId       String
+  board         Board    @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  data          Bytes
+  schemaVersion Int      @default(1)
+  createdAt     DateTime @default(now())
+
+  @@index([boardId, createdAt])
+  @@map("board_snapshots")
+}
+
+model BoardUpdate {
+  id        String   @id @default(cuid())
+  boardId   String
+  board     Board    @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  update    Bytes
+  userId    String?
+  createdAt DateTime @default(now())
+
+  @@index([boardId, createdAt])
+  @@map("board_updates")
+}
+
+// -------------------------------------------------------------
+// Atelier Collaboratif - Votes, Brainstorming Privé
+// -------------------------------------------------------------
+
+enum VoteStatus {
+  active
+  closed
+}
+
+model VoteSession {
+  id           String     @id @default(cuid())
+  boardId      String
+  board        Board      @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  title        String     @default("Session de vote")
+  votesPerUser Int        @default(3)
+  status       VoteStatus @default(active)
+  createdAt    DateTime   @default(now())
+  closedAt     DateTime?
+
+  votes        Vote[]
+
+  @@index([boardId])
+  @@map("vote_sessions")
+}
+
+model Vote {
+  id         String      @id @default(cuid())
+  sessionId  String
+  session    VoteSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  elementId  String
+  userId     String
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt  DateTime    @default(now())
+
+  @@unique([sessionId, elementId, userId])
+  @@index([sessionId])
+  @@index([userId])
+  @@map("votes")
+}
+
+model BrainstormDraft {
+  id          String    @id @default(cuid())
+  boardId     String
+  board       Board     @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  elementData Json
+  revealedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([boardId, userId])
+  @@map("brainstorm_drafts")
+}
+
+// -------------------------------------------------------------
+// Médias, Visites commentées & Jobs IA
+// -------------------------------------------------------------
+
+model Asset {
+  id          String   @id @default(cuid())
+  boardId     String
+  board       Board    @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  key         String   @unique
+  filename    String
+  mimeType    String
+  size        Int
+  uploaderId  String
+  createdAt   DateTime @default(now())
+
+  @@index([boardId])
+  @@map("assets")
+}
+
+model RecordedTour {
+  id              String   @id @default(cuid())
+  boardId         String
+  board           Board    @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  title           String   @default("Visite guidée")
+  duration        Float
+  trajectoryData  Json
+  audioKey        String?
+  creatorId       String
+  creator         User     @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  createdAt       DateTime @default(now())
+
+  @@index([boardId])
+  @@map("recorded_tours")
+}
+
+enum AiJobStatus {
+  pending
+  running
+  completed
+  failed
+  cancelled
+}
+
+model AiJob {
+  id              String      @id @default(cuid())
+  boardId         String
+  board           Board       @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobType         String
+  status          AiJobStatus @default(pending)
+  idempotencyKey  String      @unique
+  inputData       Json
+  resultData      Json?
+  error           String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@index([boardId])
+  @@map("ai_jobs")
+}

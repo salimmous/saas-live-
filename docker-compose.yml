@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: whiteboard-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: salim
+      POSTGRES_PASSWORD: secretpassword
+      POSTGRES_DB: whiteboard
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U salim -d whiteboard"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: whiteboard-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  createbuckets:
+    image: minio/mc:latest
+    container_name: whiteboard-mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set local http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb local/whiteboard-assets || true;
+      /usr/bin/mc anonymous set download local/whiteboard-assets;
+      exit 0;
+      "
+
+  sync:
+    build:
+      context: .
+      dockerfile: ./apps/sync/Dockerfile
+    container_name: whiteboard-sync
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "1234:1234"
+    environment:
+      PORT: 1234
+      DATABASE_URL: "postgresql://salim:secretpassword@postgres:5432/whiteboard?schema=public"
+      BETTER_AUTH_SECRET: "development_better_auth_secret_key_32_chars_min"
+
+  web:
+    build:
+      context: .
+      dockerfile: ./apps/web/Dockerfile
+    container_name: whiteboard-web
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sync:
+        condition: service_started
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: "postgresql://salim:secretpassword@postgres:5432/whiteboard?schema=public"
+      BETTER_AUTH_SECRET: "development_better_auth_secret_key_32_chars_min"
+      BETTER_AUTH_URL: "http://localhost:3000"
+      APP_URL: "http://localhost:3000"
+      SYNC_URL: "ws://localhost:1234"
+      NEXT_PUBLIC_APP_URL: "http://localhost:3000"
+      NEXT_PUBLIC_SYNC_URL: "ws://localhost:1234"
+      S3_ENDPOINT: "http://minio:9000"
+      S3_REGION: "us-east-1"
+      S3_ACCESS_KEY: "minioadmin"
+      S3_SECRET_KEY: "minioadmin"
+      S3_BUCKET: "whiteboard-assets"
+
+volumes:
+  postgres_data:
+  minio_data:
