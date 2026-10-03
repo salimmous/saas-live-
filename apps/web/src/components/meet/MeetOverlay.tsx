@@ -21,8 +21,6 @@ import {
   Edit3,
   Eye,
   Radio,
-  ChevronRight,
-  Minus,
   User,
 } from 'lucide-react';
 
@@ -63,13 +61,13 @@ export function MeetOverlay({
   onClose,
   onPermissionChange,
 }: MeetOverlayProps) {
-  // Nom d'affichage éditable par l'invité
+  // Nom d'affichage de l'invité
   const [displayName, setDisplayName] = useState(
     currentUser.name.startsWith('Participant ') ? '' : currentUser.name
   );
   const [nameError, setNameError] = useState(false);
 
-  // Détection Hôte : UNIQUEMENT l'utilisateur qui a le rôle owner ou session.hostId
+  // Détection Hôte : UNIQUEMENT l'hôte officiel (pas tout le monde)
   const [hostId, setHostId] = useState<string>('');
   const isHost = hostId ? hostId === currentUser.id : currentUser.role === 'owner';
 
@@ -81,7 +79,7 @@ export function MeetOverlay({
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
 
-  // Flux distants WebRTC P2P (Vidéo & Audio réels)
+  // Flux distants WebRTC P2P (Voix & Vidéo en direct)
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
 
   // États de session
@@ -89,6 +87,7 @@ export function MeetOverlay({
   const [isInWaitingRoom, setIsInWaitingRoom] = useState(false);
   const [participants, setParticipants] = useState<MeetParticipant[]>([]);
   const [waitingRoom, setWaitingRoom] = useState<WaitingUser[]>([]);
+  const [showHostPanel, setShowHostPanel] = useState(false);
   const [hasCopiedLink, setHasCopiedLink] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
 
@@ -99,7 +98,7 @@ export function MeetOverlay({
   const peerRef = useRef<any>(null);
   const activeCallsRef = useRef<Map<string, any>>(new Map());
 
-  // Générer un Peer ID déterministe pour PeerJS
+  // Identifiant PeerJS
   const getPeerIdForUser = useCallback(
     (uid: string) => {
       const cleanBoard = boardId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10);
@@ -159,7 +158,7 @@ export function MeetOverlay({
     }
   }, [localStream, isJoined]);
 
-  // Initialisation du client PeerJS pour le streaming WebRTC P2P (Voix & Vidéo en direct)
+  // Initialisation PeerJS WebRTC P2P
   useEffect(() => {
     if (!isJoined || typeof window === 'undefined') return;
 
@@ -188,18 +187,15 @@ export function MeetOverlay({
           console.log('[PeerJS] Connecté avec ID:', id);
         });
 
-        // Réception d'un appel vidéo/audio entrant
         peerInstance.on('call', (call: any) => {
           console.log('[PeerJS] Appel entrant de:', call.peer);
           activeCallsRef.current.set(call.peer, call);
 
-          // Répondre avec notre flux local (si disponible)
           const currentStream = localStreamRef.current;
           call.answer(currentStream || undefined);
 
-          // Réception du flux distant
           call.on('stream', (remoteStream: MediaStream) => {
-            console.log('[PeerJS] Flux reçu de:', call.peer);
+            console.log('[PeerJS] Flux distant reçu de:', call.peer);
             if (!isDestroyed) {
               setRemoteStreams((prev) => ({
                 ...prev,
@@ -218,15 +214,15 @@ export function MeetOverlay({
           });
 
           call.on('error', (err: any) => {
-            console.warn('[PeerJS] Erreur d’appel:', err);
+            console.warn('[PeerJS] Erreur call:', err);
           });
         });
 
         peerInstance.on('error', (err: any) => {
-          console.warn('[PeerJS] Erreur globale:', err.type, err.message);
+          console.warn('[PeerJS] Erreur:', err.type, err.message);
         });
       } catch (err) {
-        console.error('[PeerJS] Erreur d’initialisation:', err);
+        console.error('[PeerJS] Erreur init:', err);
       }
     };
 
@@ -243,13 +239,12 @@ export function MeetOverlay({
     };
   }, [isJoined, myPeerId]);
 
-  // Appeler les pairs distants quand la liste des participants est mise à jour
+  // Appeler les autres participants pour établir la vidéo et le son
   const connectToPeer = useCallback(
     (targetUserId: string) => {
       if (!peerRef.current || targetUserId === currentUser.id) return;
       const targetPeerId = getPeerIdForUser(targetUserId);
 
-      // Si déjà en appel avec ce pair, ne pas rappeler
       if (activeCallsRef.current.has(targetPeerId) || remoteStreams[targetPeerId]) {
         return;
       }
@@ -263,7 +258,7 @@ export function MeetOverlay({
         activeCallsRef.current.set(targetPeerId, call);
 
         call.on('stream', (remoteStream: MediaStream) => {
-          console.log('[PeerJS] Flux reçu (en appelant) de:', targetPeerId);
+          console.log('[PeerJS] Flux distant reçu (call):', targetPeerId);
           setRemoteStreams((prev) => ({
             ...prev,
             [targetPeerId]: remoteStream,
@@ -280,16 +275,16 @@ export function MeetOverlay({
         });
 
         call.on('error', (err: any) => {
-          console.warn('[PeerJS] Erreur appel vers:', targetPeerId, err);
+          console.warn('[PeerJS] Erreur call vers:', targetPeerId, err);
         });
       } catch (err) {
-        console.warn('[PeerJS] Impossible d’appeler:', err);
+        console.warn('[PeerJS] Call impossible:', err);
       }
     },
     [currentUser.id, getPeerIdForUser, remoteStreams]
   );
 
-  // Rejoindre la réunion après saisie du prénom / nom
+  // Rejoindre la réunion avec saisie du prénom / nom
   const joinMeeting = async () => {
     const finalName = displayName.trim();
     if (!finalName) {
@@ -352,7 +347,7 @@ export function MeetOverlay({
     }
   };
 
-  // Polling régulier du serveur pour l'état des participants
+  // Polling régulier de l'état
   const pollMeetState = useCallback(async () => {
     if (!isOpen) return;
 
@@ -371,7 +366,7 @@ export function MeetOverlay({
           setIsJoined(true);
         }
 
-        // Appliquer les restrictions imposées par l'Hôte
+        // Restrictions de l'hôte
         if (currentInList) {
           if (currentInList.isMutedByHost && isMicOn) {
             setIsMicOn(false);
@@ -392,7 +387,7 @@ export function MeetOverlay({
           }
         }
 
-        // Mise à jour de la liste
+        // Mise à jour participants
         setParticipants((prev) => {
           const map = new Map<string, MeetParticipant>();
           prev.forEach((p) => map.set(p.id, p));
@@ -416,7 +411,7 @@ export function MeetOverlay({
           return Array.from(map.values());
         });
 
-        // Appeler tout nouveau participant qui n'est pas encore connecté en P2P
+        // Appeler tout participant manquant en WebRTC
         if (isJoined && peerRef.current) {
           serverParticipants.forEach((p) => {
             if (p.id !== currentUser.id) {
@@ -468,7 +463,7 @@ export function MeetOverlay({
     };
   }, [isOpen, pollMeetState]);
 
-  // Quitter la réunion
+  // Quitter le Meet
   const handleLeave = async () => {
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -503,7 +498,7 @@ export function MeetOverlay({
     onClose();
   };
 
-  // Toggles Médias
+  // Toggles
   const toggleMic = () => {
     const nextState = !isMicOn;
     if (localStreamRef.current) {
@@ -554,7 +549,7 @@ export function MeetOverlay({
     }
   };
 
-  // Modération Hôte
+  // Modération
   const handleApproveUser = async (targetUserId: string) => {
     await fetch(`/api/boards/${boardId}/meet`, {
       method: 'POST',
@@ -680,7 +675,7 @@ export function MeetOverlay({
             </button>
           </div>
 
-          {/* Saisie obligatoire du prénom / nom de l'invité */}
+          {/* Saisie du prénom / nom */}
           <div className="space-y-1.5 text-left">
             <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
               <User size={14} className="text-indigo-400" />
@@ -703,7 +698,7 @@ export function MeetOverlay({
             />
             {nameError && (
               <span className="text-[11px] text-rose-400 block">
-                Veuillez entrer votre prénom ou nom pour entrer dans la réunion.
+                Veuillez entrer votre prénom ou nom avant d’entrer.
               </span>
             )}
           </div>
@@ -809,29 +804,10 @@ export function MeetOverlay({
     );
   }
 
-  // 3. Bouton Flottant quand la Sidebar est Réduite (Minimized)
-  if (isMinimized) {
-    return (
-      <div
-        onClick={() => setIsMinimized(false)}
-        className="fixed top-20 right-6 z-40 bg-slate-900/95 border border-indigo-500/50 hover:border-indigo-400 text-white px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-3 cursor-pointer backdrop-blur-md transition-all hover:scale-102 active:scale-95 group"
-      >
-        <span className="flex h-2.5 w-2.5 relative">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-        </span>
-        <div className="text-xs font-bold">
-          Meet en direct ({activeCount})
-        </div>
-        <ChevronRight size={16} className="text-slate-400 group-hover:text-white transition-transform" />
-      </div>
-    );
-  }
-
-  // 4. RÉUNION EN COURS : SIDEBAR DROITE INTÉGRÉE (Zéro collision tableau blanc !)
+  // 3. RÉUNION EN COURS : DESIGN FLOTTANT (Bulles Vidéo en haut à droite + Barre de contrôle en bas au-dessus de la barre d'outils)
   return (
     <>
-      {/* Lecteurs Audio distants cachés (Garantit le son sur iOS Safari et Mac Chrome) */}
+      {/* Lecteurs Audio distants (Garantit le son sur iOS Safari et Mac Chrome) */}
       {Object.entries(remoteStreams).map(([peerKey, stream]) => (
         <audio
           key={`audio_${peerKey}`}
@@ -846,140 +822,116 @@ export function MeetOverlay({
         />
       ))}
 
-      <aside className="fixed top-0 right-0 bottom-0 w-80 sm:w-88 bg-slate-900/98 backdrop-blur-2xl border-l border-slate-800 z-50 flex flex-col text-white shadow-2xl animate-slide-in">
-        {/* Sidebar Header */}
-        <div className="p-4 border-b border-slate-800/80 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <span className="flex h-2.5 w-2.5 relative">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-            </span>
-            <div>
-              <h3 className="font-bold text-sm text-white flex items-center gap-1.5">
-                <span>Meet en direct</span>
-                <span className="text-[11px] font-semibold text-slate-400">({activeCount})</span>
-              </h3>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => setIsMinimized(true)}
-              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
-              title="Réduire la barre latérale"
-            >
-              <Minus size={16} />
-            </button>
-            <button
-              type="button"
-              onClick={handleLeave}
-              className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg hover:bg-rose-950/40 transition-colors"
-              title="Quitter la réunion"
-            >
-              <X size={16} />
-            </button>
-          </div>
-        </div>
-
-        {/* Demandes d'entrée en Salle d'Attente pour l'Hôte */}
-        {isHost && waitingRoom.length > 0 && (
-          <div className="p-3 bg-indigo-950/60 border-b border-indigo-500/40 space-y-2">
-            <div className="flex items-center gap-1.5 text-indigo-300 font-bold text-xs uppercase tracking-wider">
+      {/* Demandes d'entrée en Salle d'Attente pour l'Hôte */}
+      {isHost && waitingRoom.length > 0 && (
+        <div className="fixed top-20 right-6 z-50 max-w-md w-full bg-slate-900/95 border border-indigo-500/60 rounded-2xl shadow-2xl p-4 text-white space-y-3 animate-slide-in">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-indigo-400 font-bold text-xs uppercase tracking-wider">
               <Sparkles size={14} />
               <span>Demande d’accès ({waitingRoom.length})</span>
             </div>
-            <div className="space-y-1.5">
-              {waitingRoom.map((w) => (
-                <div
-                  key={w.id}
-                  className="flex items-center justify-between bg-slate-900/90 px-3 py-2 rounded-xl border border-indigo-500/30 text-xs"
-                >
-                  <span className="font-semibold text-white truncate max-w-[120px]">{w.name}</span>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => handleApproveUser(w.id)}
-                      className="p-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-colors"
-                      title="Autoriser"
-                    >
-                      <UserCheck size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleRejectUser(w.id)}
-                      className="p-1 text-slate-400 hover:text-rose-400 rounded-md transition-colors"
-                      title="Refuser"
-                    >
-                      <UserX size={14} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
           </div>
-        )}
+          <div className="space-y-2">
+            {waitingRoom.map((w) => (
+              <div
+                key={w.id}
+                className="flex items-center justify-between bg-slate-800/90 px-3.5 py-2.5 rounded-xl border border-slate-700/60"
+              >
+                <div className="text-xs">
+                  <span className="font-semibold text-white block">{w.name}</span>
+                  <span className="text-[10px] text-slate-400">Souhaite rejoindre la réunion</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleApproveUser(w.id)}
+                    className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors shadow-xs"
+                    title="Autoriser l’entrée"
+                  >
+                    <UserCheck size={14} />
+                    <span>Autoriser</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRejectUser(w.id)}
+                    className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 rounded-lg transition-colors"
+                    title="Refuser"
+                  >
+                    <UserX size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
-        {/* Grille des Flux Vidéo (Vous + Autres participants) */}
-        <div className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
-          {/* Tuile Vidéo Locale (Vous) */}
-          <div
-            className={`relative w-full aspect-video bg-slate-950 rounded-2xl overflow-hidden shadow-md select-none ${
-              isHost
-                ? 'border-2 border-amber-400 ring-2 ring-amber-400/30'
-                : 'border-2 border-indigo-500/80 ring-2 ring-indigo-500/20'
-            }`}
-          >
-            {/* Badge Rôle en haut à gauche */}
-            <div className="absolute top-2 left-2 z-10">
-              {isHost ? (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-400 via-amber-500 to-yellow-500 text-slate-950 font-extrabold text-[10px] tracking-wide shadow-md">
-                  <ShieldCheck size={12} className="text-slate-950" />
-                  <span>ADMIN / HÔTE</span>
-                </span>
+      {/* Bulles Vidéo Flottantes en Haut à Droite (Style Miro / FigJam) */}
+      <div
+        className={`fixed z-40 transition-all duration-300 ${
+          isMinimized
+            ? 'bottom-28 right-6'
+            : 'top-20 right-6 flex flex-col gap-3 max-h-[calc(100vh-160px)] overflow-y-auto pr-1'
+        }`}
+      >
+        {/* Bulle Vidéo Locale (Vous) */}
+        <div
+          className={`relative w-48 sm:w-56 aspect-video bg-slate-900 rounded-2xl overflow-hidden shadow-2xl group select-none transition-all ${
+            isHost
+              ? 'border-2 border-amber-400 ring-2 ring-amber-400/30 shadow-amber-500/10'
+              : 'border-2 border-indigo-500 ring-2 ring-indigo-500/20'
+          }`}
+        >
+          {/* Badge Rôle en haut à gauche */}
+          <div className="absolute top-2 left-2 z-10">
+            {isHost ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-400 via-amber-500 to-yellow-500 text-slate-950 font-extrabold text-[10px] tracking-wide shadow-md">
+                <ShieldCheck size={12} className="text-slate-950" />
+                <span>ADMIN / HÔTE</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800/90 text-slate-300 font-medium text-[10px] border border-slate-700/80">
+                <span>Invité</span>
+              </span>
+            )}
+          </div>
+
+          <video
+            ref={localVideoRef}
+            autoPlay
+            playsInline
+            muted
+            className={`w-full h-full object-cover ${!isCamOn && 'hidden'}`}
+          />
+          {!isCamOn && (
+            <div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-slate-200">
+              <div
+                className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-base text-white shadow-md ${
+                  isHost ? 'bg-amber-600' : 'bg-indigo-600'
+                }`}
+              >
+                {(displayName || currentUser.name).charAt(0).toUpperCase()}
+              </div>
+            </div>
+          )}
+
+          <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between text-[11px] font-semibold text-white bg-slate-900/85 backdrop-blur-xs px-2.5 py-1 rounded-lg border border-slate-700/60">
+            <span className="truncate max-w-[130px]">
+              {displayName || currentUser.name} (Vous)
+            </span>
+            <div className="flex items-center gap-1.5">
+              {!isMicOn ? (
+                <VolumeX size={13} className="text-rose-400" />
               ) : (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-800/90 text-slate-300 font-medium text-[10px] border border-slate-700/80">
-                  <span>Invité</span>
-                </span>
+                <Mic size={13} className="text-emerald-400" />
               )}
             </div>
-
-            <video
-              ref={localVideoRef}
-              autoPlay
-              playsInline
-              muted
-              className={`w-full h-full object-cover ${!isCamOn && 'hidden'}`}
-            />
-            {!isCamOn && (
-              <div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-slate-300 gap-1">
-                <div
-                  className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg text-white shadow-md ${
-                    isHost ? 'bg-amber-600' : 'bg-indigo-600'
-                  }`}
-                >
-                  {(displayName || currentUser.name).charAt(0).toUpperCase()}
-                </div>
-                <span className="text-[10px] text-slate-400">Caméra désactivée</span>
-              </div>
-            )}
-
-            <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between text-[11px] font-semibold text-white bg-slate-900/85 backdrop-blur-xs px-2.5 py-1 rounded-lg border border-slate-700/60">
-              <span className="truncate max-w-[140px]">
-                {displayName || currentUser.name} (Vous)
-              </span>
-              <div className="flex items-center gap-1">
-                {!isMicOn ? (
-                  <VolumeX size={13} className="text-rose-400" />
-                ) : (
-                  <Mic size={13} className="text-emerald-400" />
-                )}
-              </div>
-            </div>
           </div>
+        </div>
 
-          {/* Tuiles Vidéo Distantes (WebRTC Live Stream avec audio/vidéo réel) */}
-          {participants
+        {/* Bulles Vidéo des Autres Participants (WebRTC Live Video & Audio) */}
+        {!isMinimized &&
+          participants
             .filter((p) => p.id !== currentUser.id)
             .map((p) => {
               const isParticipantHost = hostId ? p.id === hostId : p.role === 'host';
@@ -993,7 +945,7 @@ export function MeetOverlay({
               return (
                 <div
                   key={p.id}
-                  className={`relative w-full aspect-video bg-slate-950 rounded-2xl overflow-hidden shadow-md select-none ${
+                  className={`relative w-48 sm:w-56 aspect-video bg-slate-900 rounded-2xl overflow-hidden shadow-2xl select-none transition-all ${
                     isParticipantHost
                       ? 'border-2 border-amber-400 ring-2 ring-amber-400/30'
                       : p.isSpeaking
@@ -1030,26 +982,26 @@ export function MeetOverlay({
                     }`}
                   />
 
-                  {/* Fallback si caméra éteinte ou en cours de connexion */}
+                  {/* Fallback si caméra éteinte ou flux en attente */}
                   {(!p.hasVideo || p.isVideoBlockedByHost || !hasVideoTrack) && (
-                    <div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-slate-300 gap-1.5">
-                      <div className="w-12 h-12 rounded-full bg-slate-700 flex items-center justify-center font-bold text-lg text-white">
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-slate-300 gap-1">
+                      <div className="w-12 h-12 rounded-full bg-slate-700 flex items-center justify-center font-bold text-base text-white">
                         {p.name.charAt(0).toUpperCase()}
                       </div>
                       <span className="text-[10px] text-slate-400">
                         {p.isVideoBlockedByHost
-                          ? 'Caméra bloquée par l’hôte'
+                          ? 'Caméra bloquée'
                           : !p.hasVideo
                           ? 'Caméra coupée'
                           : remoteStream
                           ? 'Caméra inactive'
-                          : 'Connexion directe…'}
+                          : 'Connexion…'}
                       </span>
                     </div>
                   )}
 
                   <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between text-[11px] font-semibold text-white bg-slate-900/85 backdrop-blur-xs px-2.5 py-1 rounded-lg border border-slate-700/60">
-                    <span className="truncate max-w-[140px]">{p.name}</span>
+                    <span className="truncate max-w-[130px]">{p.name}</span>
                     <div className="flex items-center gap-1.5">
                       {p.isMutedByHost || !p.hasAudio ? (
                         <VolumeX size={13} className="text-rose-400" />
@@ -1066,179 +1018,246 @@ export function MeetOverlay({
                 </div>
               );
             })}
-        </div>
+      </div>
 
-        {/* Barre de Contrôles Média (Dockée dans la Sidebar) */}
-        <div className="p-3 bg-slate-950/90 border-t border-slate-800 space-y-2.5">
-          <div className="grid grid-cols-4 gap-2">
-            {/* Micro */}
-            <button
-              type="button"
-              onClick={toggleMic}
-              className={`p-2.5 rounded-xl transition-all flex flex-col items-center justify-center gap-1 text-[11px] font-semibold active:scale-95 ${
-                isMicOn
-                  ? 'bg-slate-800 hover:bg-slate-700 text-white'
-                  : 'bg-rose-600 text-white shadow-lg shadow-rose-600/30'
-              }`}
-              title={isMicOn ? 'Couper micro' : 'Activer micro'}
-            >
-              {isMicOn ? <Mic size={18} /> : <MicOff size={18} />}
-              <span>{isMicOn ? 'Micro' : 'Muet'}</span>
-            </button>
+      {/* Barre de Contrôle Flottante Inférieure (Positionnée à bottom-24 pour flotter AU-DESSUS de la barre d'outils du tableau blanc !) */}
+      <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 px-4 py-2 rounded-2xl shadow-2xl flex items-center gap-2 sm:gap-3 text-white">
+        {/* Badge Hôte si applicable */}
+        {isHost && (
+          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-bold">
+            <ShieldCheck size={14} className="text-amber-400" />
+            <span>Hôte</span>
+          </div>
+        )}
 
-            {/* Caméra */}
-            <button
-              type="button"
-              onClick={toggleCam}
-              className={`p-2.5 rounded-xl transition-all flex flex-col items-center justify-center gap-1 text-[11px] font-semibold active:scale-95 ${
-                isCamOn
-                  ? 'bg-slate-800 hover:bg-slate-700 text-white'
-                  : 'bg-rose-600 text-white shadow-lg shadow-rose-600/30'
-              }`}
-              title={isCamOn ? 'Couper caméra' : 'Activer caméra'}
-            >
-              {isCamOn ? <Video size={18} /> : <VideoOff size={18} />}
-              <span>{isCamOn ? 'Caméra' : 'Off'}</span>
-            </button>
+        {/* Micro */}
+        <button
+          type="button"
+          onClick={toggleMic}
+          className={`p-2.5 rounded-xl transition-all flex items-center gap-1.5 text-xs font-semibold active:scale-95 ${
+            isMicOn
+              ? 'bg-slate-800 hover:bg-slate-700 text-white'
+              : 'bg-rose-500 text-white shadow-lg shadow-rose-500/25'
+          }`}
+          title={isMicOn ? 'Couper micro (M)' : 'Activer micro'}
+        >
+          {isMicOn ? <Mic size={18} /> : <MicOff size={18} />}
+          <span className="hidden md:inline">{isMicOn ? 'Micro actif' : 'Muet'}</span>
+        </button>
 
-            {/* Partage d'écran */}
-            <button
-              type="button"
-              onClick={toggleScreenShare}
-              className={`p-2.5 rounded-xl transition-all flex flex-col items-center justify-center gap-1 text-[11px] font-semibold active:scale-95 ${
-                isScreenSharing
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
-              }`}
-              title="Partager l'écran"
-            >
-              <MonitorUp size={18} />
-              <span>Écran</span>
-            </button>
+        {/* Caméra */}
+        <button
+          type="button"
+          onClick={toggleCam}
+          className={`p-2.5 rounded-xl transition-all flex items-center gap-1.5 text-xs font-semibold active:scale-95 ${
+            isCamOn
+              ? 'bg-slate-800 hover:bg-slate-700 text-white'
+              : 'bg-rose-500 text-white shadow-lg shadow-rose-500/25'
+          }`}
+          title={isCamOn ? 'Couper caméra (V)' : 'Activer caméra'}
+        >
+          {isCamOn ? <Video size={18} /> : <VideoOff size={18} />}
+          <span className="hidden md:inline">{isCamOn ? 'Caméra active' : 'Sans vidéo'}</span>
+        </button>
 
-            {/* Inviter */}
+        {/* Partage d'écran */}
+        <button
+          type="button"
+          onClick={toggleScreenShare}
+          className={`p-2.5 rounded-xl transition-all flex items-center gap-1.5 text-xs font-semibold active:scale-95 ${
+            isScreenSharing ? 'bg-blue-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+          }`}
+          title="Partager l’écran"
+        >
+          <MonitorUp size={18} />
+          <span className="hidden lg:inline">{isScreenSharing ? 'Partage actif' : 'Écran'}</span>
+        </button>
+
+        <div className="w-[1px] h-6 bg-slate-700 mx-1" />
+
+        {/* Bouton Participants / Modération */}
+        <button
+          type="button"
+          onClick={() => setShowHostPanel(!showHostPanel)}
+          className={`p-2.5 rounded-xl transition-all flex items-center gap-1.5 text-xs font-semibold relative active:scale-95 ${
+            showHostPanel ? 'bg-indigo-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+          }`}
+          title="Gérer les participants et permissions"
+        >
+          <Users size={18} />
+          <span className="font-bold">{activeCount}</span>
+          {waitingRoom.length > 0 && isHost && (
+            <span className="absolute -top-1 -right-1 w-4 h-4 bg-rose-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-bounce">
+              {waitingRoom.length}
+            </span>
+          )}
+        </button>
+
+        {/* Inviter */}
+        <button
+          type="button"
+          onClick={handleCopyMeetLink}
+          className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all text-xs font-semibold flex items-center gap-1.5 active:scale-95"
+          title="Copier le lien direct du Meet"
+        >
+          {hasCopiedLink ? <Check size={18} className="text-emerald-400" /> : <Copy size={18} />}
+          <span className="hidden sm:inline">{hasCopiedLink ? 'Copié !' : 'Inviter'}</span>
+        </button>
+
+        {/* Quitter */}
+        <button
+          type="button"
+          onClick={handleLeave}
+          className="p-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white transition-all text-xs font-semibold flex items-center gap-1.5 shadow-lg shadow-rose-600/30 active:scale-95"
+          title="Quitter la réunion"
+        >
+          <PhoneOff size={18} />
+          <span className="hidden sm:inline">Quitter</span>
+        </button>
+      </div>
+
+      {/* Modal Participants & Modération Hôte (Positionnée à bottom-40 au-dessus de la barre de contrôle) */}
+      {showHostPanel && (
+        <div className="fixed bottom-40 left-1/2 -translate-x-1/2 z-50 w-full max-w-lg bg-slate-900 border border-slate-700 rounded-3xl shadow-2xl p-5 text-white space-y-4 animate-scale-in">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2">
+              <ShieldCheck size={20} className="text-amber-400" />
+              <div>
+                <h3 className="font-bold text-sm text-white">Participants & Modération ({activeCount})</h3>
+                <p className="text-[11px] text-slate-400">
+                  {isHost ? 'Vous gérez cette réunion en tant qu’Hôte / Admin' : 'Vue de la session en direct'}
+                </p>
+              </div>
+            </div>
             <button
-              type="button"
-              onClick={handleCopyMeetLink}
-              className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all flex flex-col items-center justify-center gap-1 text-[11px] font-semibold active:scale-95"
-              title="Copier le lien d'invitation Meet"
+              onClick={() => setShowHostPanel(false)}
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
             >
-              {hasCopiedLink ? <Check size={18} className="text-emerald-400" /> : <Copy size={18} />}
-              <span>{hasCopiedLink ? 'Copié' : 'Inviter'}</span>
+              <X size={16} />
             </button>
           </div>
 
-          {/* Bouton Quitter */}
-          <button
-            type="button"
-            onClick={handleLeave}
-            className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 active:scale-98"
-          >
-            <PhoneOff size={16} />
-            <span>Quitter la réunion</span>
-          </button>
-        </div>
-
-        {/* Section Modération & Participants */}
-        <div className="p-3 bg-slate-900 border-t border-slate-800 space-y-2 max-h-52 overflow-y-auto">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-white">
-              <Users size={14} className="text-indigo-400" />
-              <span>Participants ({activeCount})</span>
-            </div>
-
-            {isHost && (
+          {/* Actions globales de l'Hôte */}
+          {isHost && (
+            <div className="flex items-center gap-2 pt-1">
               <button
                 type="button"
                 onClick={handleMuteAll}
-                className="text-[10px] text-rose-400 hover:text-rose-300 font-semibold flex items-center gap-1 hover:underline"
-                title="Couper tous les micros"
+                className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-1.5"
               >
-                <VolumeX size={12} />
-                <span>Tout muet</span>
+                <VolumeX size={14} className="text-rose-400" />
+                <span>Couper tous les micros</span>
               </button>
-            )}
-          </div>
+              <button
+                type="button"
+                onClick={() => handleCopyMeetLink()}
+                className="flex-1 py-2 bg-indigo-600/30 hover:bg-indigo-600/40 text-indigo-300 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 border border-indigo-500/40"
+              >
+                <Copy size={14} />
+                <span>Copier le lien Meet</span>
+              </button>
+            </div>
+          )}
 
-          <div className="space-y-1.5 divide-y divide-slate-800/60">
+          {/* Liste détaillée des participants */}
+          <div className="max-h-64 overflow-y-auto space-y-2 pr-1 divide-y divide-slate-800/60">
             {participants.map((p) => {
               const isCurrent = p.id === currentUser.id;
               const isParticipantHost = hostId ? p.id === hostId : p.role === 'host';
 
               return (
-                <div key={p.id} className="pt-1.5 flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2">
+                <div key={p.id} className="pt-2 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
                     <div
-                      className={`w-6 h-6 rounded-full text-white font-bold text-[10px] flex items-center justify-center ${
-                        isParticipantHost ? 'bg-amber-600' : 'bg-slate-700'
+                      className={`w-8 h-8 rounded-full text-white font-bold text-xs flex items-center justify-center border ${
+                        isParticipantHost ? 'bg-amber-600 border-amber-400' : 'bg-slate-800 border-slate-700'
                       }`}
                     >
                       {p.name.charAt(0).toUpperCase()}
                     </div>
                     <div>
-                      <div className="flex items-center gap-1">
-                        <span className="font-semibold text-white max-w-[100px] truncate">{p.name}</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-semibold text-xs text-white">{p.name}</span>
                         {isParticipantHost && (
-                          <span className="text-[9px] font-bold text-amber-400">Hôte</span>
+                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 text-[9px] font-black uppercase">
+                            <ShieldCheck size={10} />
+                            Hôte / Admin
+                          </span>
                         )}
-                        {isCurrent && <span className="text-[9px] text-slate-400">(Vous)</span>}
+                        {isCurrent && <span className="text-[10px] text-slate-400">(Vous)</span>}
                       </div>
+                      <span className="text-[10px] text-slate-400 block">
+                        {p.canDraw ? 'Peut dessiner & éditer' : 'Lecture seule'}
+                      </span>
                     </div>
                   </div>
 
-                  {/* Contrôles de modération Hôte */}
+                  {/* Contrôles de modération par l'Hôte */}
                   {isHost && !isCurrent ? (
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700/60">
+                      {/* Toggle Micro */}
                       <button
                         type="button"
                         onClick={() => handleToggleParticipantMic(p)}
-                        className={`p-1 rounded-md transition-colors ${
-                          p.isMutedByHost ? 'text-rose-400 bg-rose-500/20' : 'text-slate-400 hover:text-white'
+                        className={`p-1.5 rounded-lg transition-colors ${
+                          p.isMutedByHost
+                            ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30'
+                            : 'text-slate-300 hover:bg-slate-700'
                         }`}
                         title={p.isMutedByHost ? 'Débloquer micro' : 'Couper micro'}
                       >
-                        {p.isMutedByHost ? <VolumeX size={13} /> : <Mic size={13} />}
+                        {p.isMutedByHost ? <VolumeX size={14} /> : <Mic size={14} />}
                       </button>
+
+                      {/* Toggle Caméra */}
                       <button
                         type="button"
                         onClick={() => handleToggleParticipantVideo(p)}
-                        className={`p-1 rounded-md transition-colors ${
-                          p.isVideoBlockedByHost ? 'text-rose-400 bg-rose-500/20' : 'text-slate-400 hover:text-white'
+                        className={`p-1.5 rounded-lg transition-colors ${
+                          p.isVideoBlockedByHost
+                            ? 'bg-rose-500/20 text-rose-400 hover:bg-rose-500/30'
+                            : 'text-slate-300 hover:bg-slate-700'
                         }`}
                         title={p.isVideoBlockedByHost ? 'Débloquer vidéo' : 'Bloquer vidéo'}
                       >
-                        {p.isVideoBlockedByHost ? <VideoOff size={13} /> : <Video size={13} />}
+                        {p.isVideoBlockedByHost ? <VideoOff size={14} /> : <Video size={14} />}
                       </button>
+
+                      {/* Toggle Droit de dessin */}
                       <button
                         type="button"
                         onClick={() => handleToggleParticipantDraw(p)}
-                        className={`p-1 rounded-md transition-colors ${
-                          !p.canDraw ? 'text-amber-400 bg-amber-500/20' : 'text-slate-400 hover:text-white'
+                        className={`p-1.5 rounded-lg transition-colors ${
+                          !p.canDraw
+                            ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
+                            : 'text-slate-300 hover:bg-slate-700'
                         }`}
                         title={p.canDraw ? 'Passer en lecture seule' : 'Autoriser à dessiner'}
                       >
-                        {p.canDraw ? <Edit3 size={13} /> : <Eye size={13} />}
+                        {p.canDraw ? <Edit3 size={14} /> : <Eye size={14} />}
                       </button>
+
+                      {/* Expulser */}
                       <button
                         type="button"
                         onClick={() => handleKickUser(p.id)}
-                        className="p-1 text-slate-400 hover:text-rose-400 transition-colors"
+                        className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 rounded-lg transition-colors ml-1"
                         title="Expulser"
                       >
-                        <UserX size={13} />
+                        <UserX size={14} />
                       </button>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-1 text-slate-400">
+                    <div className="flex items-center gap-1.5 text-xs text-slate-400">
                       {p.hasAudio && !p.isMutedByHost ? (
-                        <Mic size={13} className="text-emerald-400" />
+                        <Mic size={14} className="text-emerald-400" />
                       ) : (
-                        <VolumeX size={13} className="text-rose-400" />
+                        <VolumeX size={14} className="text-rose-400" />
                       )}
                       {p.hasVideo && !p.isVideoBlockedByHost ? (
-                        <Video size={13} className="text-indigo-400" />
+                        <Video size={14} className="text-indigo-400" />
                       ) : (
-                        <VideoOff size={13} className="text-slate-500" />
+                        <VideoOff size={14} className="text-slate-500" />
                       )}
                     </div>
                   )}
@@ -1247,7 +1266,7 @@ export function MeetOverlay({
             })}
           </div>
         </div>
-      </aside>
+      )}
     </>
   );
 }
