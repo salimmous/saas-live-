@@ -28,15 +28,31 @@ export default function BoardPage({ params }: BoardPageProps) {
   const [userRole, setUserRole] = useState<'owner' | 'editor' | 'reader'>('editor');
   const [boardLoading, setBoardLoading] = useState(true);
 
-  // Récupérer le token invité depuis sessionStorage si absent de l'URL
+  const [browserUid, setBrowserUid] = useState<string>('');
+  const [browserUname, setBrowserUname] = useState<string>('');
+
+  // Récupérer le token invité et générer un identifiant client unique par onglet
   useEffect(() => {
-    if (!guestToken && typeof window !== 'undefined') {
-      const storedToken = sessionStorage.getItem(`guest_token_${id}`);
-      const storedName = sessionStorage.getItem(`guest_name_${id}`);
-      if (storedToken) setGuestToken(storedToken);
-      if (storedName) setGuestName(storedName);
+    if (typeof window !== 'undefined') {
+      let uid = sessionStorage.getItem(`wb_uid_${id}`);
+      if (!uid) {
+        uid = 'u_' + Math.random().toString(36).substring(2, 8);
+        sessionStorage.setItem(`wb_uid_${id}`, uid);
+      }
+      setBrowserUid(uid);
+
+      if (!guestToken) {
+        const storedToken = sessionStorage.getItem(`guest_token_${id}`);
+        if (storedToken) setGuestToken(storedToken);
+      }
+
+      let uname = guestName || sessionStorage.getItem(`guest_name_${id}`);
+      if (!uname && !session?.user?.name) {
+        uname = 'Participant ' + uid.slice(-3).toUpperCase();
+      }
+      setBrowserUname(uname || '');
     }
-  }, [id, guestToken]);
+  }, [id, guestToken, guestName, session?.user?.name]);
 
   // Charger les métadonnées du tableau
   useEffect(() => {
@@ -73,8 +89,8 @@ export default function BoardPage({ params }: BoardPageProps) {
 
   // Déterminer les identifiants pour la collaboration temps réel
   const activeToken = guestToken || (session as any)?.session?.token || '';
-  const currentUserName = guestName || session?.user?.name || 'Visiteur';
-  const currentUserId = guestToken ? `guest_${id.slice(0, 6)}` : session?.user?.id || `user_${id.slice(0, 6)}`;
+  const currentUserName = guestName || session?.user?.name || browserUname || 'Utilisateur';
+  const currentUserId = session?.user?.id || (guestToken ? `guest_${browserUid || id.slice(0, 6)}` : (browserUid ? `user_${browserUid}` : `user_${id.slice(0, 6)}`));
 
   // Connecter le moteur de synchronisation temps réel Yjs + Hocuspocus
   const {

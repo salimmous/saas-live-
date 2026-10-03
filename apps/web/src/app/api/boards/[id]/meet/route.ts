@@ -29,8 +29,12 @@ interface MeetSession {
   updatedAt: number;
 }
 
-// Sessions Meet actives en mémoire partagée
-const activeMeets = new Map<string, MeetSession>();
+// Utilisation de globalThis pour conserver l'état entre les requêtes serverless
+const globalAny: any = globalThis;
+if (!globalAny.__activeMeets) {
+  globalAny.__activeMeets = new Map<string, MeetSession>();
+}
+const activeMeets: Map<string, MeetSession> = globalAny.__activeMeets;
 
 function getOrCreateSession(boardId: string, hostId?: string, hostName?: string): MeetSession {
   let session = activeMeets.get(boardId);
@@ -38,7 +42,7 @@ function getOrCreateSession(boardId: string, hostId?: string, hostName?: string)
     session = {
       boardId,
       hostId: hostId || 'host',
-      hostName: hostName || 'Hôte',
+      hostName: hostName || 'Hôte (Admin)',
       isActive: true,
       participants: new Map(),
       waitingRoom: new Map(),
@@ -46,19 +50,23 @@ function getOrCreateSession(boardId: string, hostId?: string, hostName?: string)
     };
     activeMeets.set(boardId, session);
   }
+  if (hostId && (!session.hostId || session.hostId === 'host')) {
+    session.hostId = hostId;
+    session.hostName = hostName || 'Hôte (Admin)';
+  }
   return session;
 }
 
-// Nettoyage des participants inactifs (> 30 secondes sans heartbeat)
+// Tolérance aux pannes réseau : 5 minutes avant suppression
 function cleanupStaleParticipants(session: MeetSession) {
   const now = Date.now();
   for (const [id, p] of session.participants.entries()) {
-    if (now - p.lastSeen > 35000) {
+    if (now - p.lastSeen > 300000) {
       session.participants.delete(id);
     }
   }
   for (const [id, w] of session.waitingRoom.entries()) {
-    if (now - w.requestedAt > 120000) {
+    if (now - w.requestedAt > 300000) {
       session.waitingRoom.delete(id);
     }
   }
@@ -95,11 +103,6 @@ export async function POST(req: NextRequest, context: RouteContext) {
   const session = getOrCreateSession(boardId, isHost ? userId : undefined, isHost ? userName : undefined);
   cleanupStaleParticipants(session);
 
-  if (isHost && !session.hostId) {
-    session.hostId = userId;
-    session.hostName = userName;
-  }
-
   switch (action) {
     // 1. Demande d'accès (Knock / Salle d'attente)
     case 'knock': {
@@ -107,7 +110,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
         session.participants.set(userId, {
           id: userId,
           name: userName,
-          role: isHost || session.hostId === userId ? 'host' : 'participant',
+          role: 'host',
           hasVideo: body.hasVideo ?? true,
           hasAudio: body.hasAudio ?? true,
           canDraw: true,
@@ -115,13 +118,17 @@ export async function POST(req: NextRequest, context: RouteContext) {
           isVideoBlockedByHost: false,
           lastSeen: Date.now(),
         });
+        session.hostId = userId;
+        session.hostName = userName;
         session.waitingRoom.delete(userId);
         session.updatedAt = Date.now();
-        return NextResponse.json({ status: 'approved' });
+        return NextResponse.json({ status: 'approved', role: 'host' });
       }
 
       if (session.participants.has(userId)) {
-        return NextResponse.json({ status: 'approved' });
+        const p = session.participants.get(userId)!;
+        p.lastSeen = Date.now();
+        return NextResponse.json({ status: 'approved', role: p.role });
       }
 
       // Ajouter à la salle d'attente
@@ -172,6 +179,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
         if (canDraw !== undefined) target.canDraw = canDraw;
         if (isMutedByHost !== undefined) target.isMutedByHost = isMutedByHost;
         if (isVideoBlockedByHost !== undefined) target.isVideoBlockedByHost = isVideoBlockedByHost;
+        target.lastSeen = Date.now();
         session.updatedAt = Date.now();
       }
       return NextResponse.json({ success: true });
@@ -207,10 +215,23 @@ export async function POST(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ success: true });
     }
 
-    // 7. Heartbeat & état média personnel (Micro/Caméra on/off)
+    // 7. Heartbeat & état média personnel
     case 'heartbeat': {
-      const participant = session.participants.get(userId);
-      if (participant) {
+      let participant = session.participants.get(userId);
+      if (!participant) {
+        participant = {
+          id: userId,
+          name: userName || 'Utilisateur',
+          role: isHost || session.hostId === userId ? 'host' : 'participant',
+          hasVideo: body.hasVideo ?? true,
+          hasAudio: body.hasAudio ?? true,
+          canDraw: true,
+          isMutedByHost: false,
+          isVideoBlockedByHost: false,
+          lastSeen: Date.now(),
+        };
+        session.participants.set(userId, participant);
+      } else {
         participant.lastSeen = Date.now();
         if (body.hasVideo !== undefined) participant.hasVideo = body.hasVideo;
         if (body.hasAudio !== undefined) participant.hasAudio = body.hasAudio;
