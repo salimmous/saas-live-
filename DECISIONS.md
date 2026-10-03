@@ -68,3 +68,21 @@ Ce document consigne l'ensemble des choix techniques, des arbitrages et de leurs
   - `TranscriptionProvider` avec implémentation OpenAI Whisper API.
   - Protection contre les pannes et absences de clés : mode dégradé clair avec consignation dans `STATUS.md`.
   - Pipeline unifié d'opérations : Plan généré -> Validation Zod -> Vérification périmètre -> Ghost Preview client -> Transaction Yjs atomique.
+
+---
+
+## 7. Mind Maps & Organisation Automatique (Phase 2)
+
+- **Structure d'arbre Mind Map :**
+  - Relations hiérarchiques représentées par `parentId` et index `order` sur le type `mindmap-node`.
+  - Ergonomie clavier fluide : `Tab` pour créer instantanément un nœud enfant connecté, `Enter` pour créer un nœud frère au même niveau.
+  - Bascule de masquage / dépliage : attribut `collapsed: boolean` permettant de replier les sous-arbres volumineux pour aérer la lecture.
+- **Moteur d'Auto-Layout Hybride :**
+  - Moteur Dagre pour les graphes dirigés et hiérarchies d'arbres (espacement `ranksep: 80`, `nodesep: 50`).
+  - Moteur Grille adaptatif pour les collections d'objets sans relation parent-enfant (colonnes régulières de 4 éléments).
+- **Contrôle Strict de Portée IA (Scope Validation) :**
+  - `validatePlanScope` rejette côté serveur et client toute mutation d'élément en dehors des IDs explicitement sélectionnés lorsque le périmètre est restreint à la sélection (`scope: { type: 'selection', targetIds }`).
+- **Import de Documents & Traçabilité :**
+  - Support de TXT, Word DOCX (via `mammoth`) et PDF textuel (via `unpdf`) convertis au choix en Mind Map radiale, Frise chronologique (timeline) ou Plan en colonnes hiérarchiques.
+  - Chaque élément généré conserve la mention d'origine via `meta.sourceDocRef: "Source: <nom_du_fichier>"`.
+

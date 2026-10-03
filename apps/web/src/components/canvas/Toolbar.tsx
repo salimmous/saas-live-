@@ -45,6 +45,7 @@ interface ToolbarProps {
   onZoomOut: () => void;
   onZoomReset: () => void;
   onFitToContent: () => void;
+  onAutoLayout?: () => void;
   onToggleAiPanel: () => void;
   onOpenHelp: () => void;
 }
@@ -61,6 +62,7 @@ export function Toolbar({
   onZoomOut,
   onZoomReset,
   onFitToContent,
+  onAutoLayout,
   onToggleAiPanel,
   onOpenHelp,
 }: ToolbarProps) {
@@ -234,6 +236,18 @@ export function Toolbar({
         >
           <Network size={18} />
         </button>
+
+        {/* Organisation automatique (Feature 2) */}
+        {onAutoLayout && (
+          <button
+            type="button"
+            title="Organisation automatique (Dagre / Grille)"
+            onClick={onAutoLayout}
+            className="p-2.5 rounded-xl text-slate-600 hover:bg-slate-100 hover:text-blue-600 transition-all"
+          >
+            <Maximize2 size={18} className="rotate-45" />
+          </button>
+        )}
 
         <div className="w-[1px] h-6 bg-slate-200 mx-1" />
 

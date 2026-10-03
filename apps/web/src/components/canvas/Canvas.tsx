@@ -23,6 +23,8 @@ import { ShortcutsHelpModal } from './ShortcutsHelpModal';
 import { ShareModal } from './ShareModal';
 import { SyncState } from '@/hooks/useBoardSync';
 import { toPng } from 'html-to-image';
+import { AiPanel } from '../panels/AiPanel';
+import { computeAutoLayout } from '@whiteboard/shared';
 
 interface CanvasProps {
   boardId: string;
@@ -39,6 +41,7 @@ interface CanvasProps {
   onAddElement: (el: BoardElement) => void;
   onUpdateElement: (id: string, patch: Partial<BoardElement>) => void;
   onDeleteElements: (ids: string[]) => void;
+  onBatchOperations?: (ops: any[]) => void;
   onBroadcastCursor: (cursor: Point | null, selectedIds: string[]) => void;
   currentUser: { id: string; name: string; email?: string; role?: string };
   isReadOnly?: boolean;
@@ -63,6 +66,7 @@ export function Canvas({
   onAddElement,
   onUpdateElement,
   onDeleteElements,
+  onBatchOperations,
   onBroadcastCursor,
   currentUser,
   isReadOnly = false,
@@ -86,6 +90,7 @@ export function Canvas({
   // Modales
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  const [showAiPanel, setShowAiPanel] = useState(false);
 
   // États d'interaction
   const [isPanning, setIsPanning] = useState(false);
@@ -199,6 +204,32 @@ export function Canvas({
     });
   }, [elementsArray, screen]);
 
+  // Organisation automatique déterministe (Feature 2)
+  const handleAutoLayout = useCallback(() => {
+    if (isReadOnly || elementsArray.length === 0) return;
+
+    const targetElements =
+      selectedIds.length > 1
+        ? elementsArray.filter((e) => selectedIds.includes(e.id))
+        : elementsArray;
+
+    const positions = computeAutoLayout(targetElements, {
+      startX: targetElements[0]?.x || 100,
+      startY: targetElements[0]?.y || 100,
+    });
+
+    if (onBatchOperations) {
+      const ops = positions.map((p) => ({
+        kind: 'update' as const,
+        elementId: p.id,
+        patch: { x: p.x, y: p.y },
+      }));
+      onBatchOperations(ops);
+    } else {
+      positions.forEach((p) => onUpdateElement(p.id, { x: p.x, y: p.y }));
+    }
+  }, [isReadOnly, elementsArray, selectedIds, onBatchOperations, onUpdateElement]);
+
   // Zoom avec centrage sur le curseur
   const handleWheel = (e: React.WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
@@ -308,6 +339,94 @@ export function Canvas({
             });
           });
           setSelectedIds(newIds);
+        }
+      } else if (e.key === 'Tab') {
+        // Tab : ajouter un nœud enfant (Feature 11)
+        if (selectedIds.length === 1 && !isReadOnly) {
+          const selectedEl = elements.get(selectedIds[0]);
+          if (selectedEl?.type === 'mindmap-node') {
+            e.preventDefault();
+            const childId = nanoid();
+            const connId = nanoid();
+            onAddElement({
+              id: childId,
+              type: 'mindmap-node',
+              parentId: selectedEl.id,
+              order: 1,
+              content: 'Sous-idée',
+              x: selectedEl.x + 220,
+              y: selectedEl.y + 30,
+              width: 160,
+              height: 48,
+              zIndex: (selectedEl.zIndex || 1) + 1,
+              style: { fill: '#ffffff', stroke: '#3b82f6', color: '#1e293b' },
+              meta: { createdAt: Date.now(), updatedAt: Date.now() },
+            });
+            onAddElement({
+              id: connId,
+              type: 'connector',
+              fromId: selectedEl.id,
+              toId: childId,
+              fromAnchor: 'right',
+              toAnchor: 'left',
+              startEnd: 'none',
+              endEnd: 'arrow',
+              routing: 'orthogonal',
+              x: 0,
+              y: 0,
+              width: 1,
+              height: 1,
+              zIndex: 1000,
+              style: { stroke: '#94a3b8', strokeWidth: 2, strokeStyle: 'solid' },
+              meta: { createdAt: Date.now(), updatedAt: Date.now() },
+            });
+            setSelectedIds([childId]);
+          }
+        }
+      } else if (e.key === 'Enter') {
+        // Entrée : ajouter un nœud frère (Feature 11)
+        if (selectedIds.length === 1 && !isReadOnly) {
+          const selectedEl = elements.get(selectedIds[0]);
+          if (selectedEl?.type === 'mindmap-node') {
+            e.preventDefault();
+            const siblingId = nanoid();
+            const connId = nanoid();
+            onAddElement({
+              id: siblingId,
+              type: 'mindmap-node',
+              parentId: selectedEl.parentId,
+              order: 2,
+              content: 'Idée sœur',
+              x: selectedEl.x,
+              y: selectedEl.y + 65,
+              width: 160,
+              height: 48,
+              zIndex: (selectedEl.zIndex || 1) + 1,
+              style: { fill: '#ffffff', stroke: '#3b82f6', color: '#1e293b' },
+              meta: { createdAt: Date.now(), updatedAt: Date.now() },
+            });
+            if (selectedEl.parentId) {
+              onAddElement({
+                id: connId,
+                type: 'connector',
+                fromId: selectedEl.parentId,
+                toId: siblingId,
+                fromAnchor: 'right',
+                toAnchor: 'left',
+                startEnd: 'none',
+                endEnd: 'arrow',
+                routing: 'orthogonal',
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                zIndex: 1000,
+                style: { stroke: '#94a3b8', strokeWidth: 2, strokeStyle: 'solid' },
+                meta: { createdAt: Date.now(), updatedAt: Date.now() },
+              });
+            }
+            setSelectedIds([siblingId]);
+          }
         }
       }
     };
@@ -854,8 +973,41 @@ export function Canvas({
           }))
         }
         onFitToContent={handleFitToContent}
-        onToggleAiPanel={onToggleAiPanel || (() => {})}
+        onAutoLayout={handleAutoLayout}
+        onToggleAiPanel={onToggleAiPanel || (() => setShowAiPanel(!showAiPanel))}
         onOpenHelp={() => setShowHelpModal(true)}
+      />
+
+      {/* Panneau IA (Phase 2) */}
+      <AiPanel
+        isOpen={showAiPanel}
+        onClose={() => setShowAiPanel(false)}
+        boardId={boardId}
+        elements={elementsArray}
+        selectedIds={selectedIds}
+        onApplyOperations={(ops) => {
+          if (onBatchOperations) {
+            onBatchOperations(ops);
+          } else {
+            ops.forEach((op) => {
+              if (op.kind === 'create') onAddElement(op.element);
+              else if (op.kind === 'update') onUpdateElement(op.elementId, op.patch);
+              else if (op.kind === 'delete') onDeleteElements([op.elementId]);
+            });
+          }
+        }}
+        onFocusElement={(targetId) => {
+          const el = elements.get(targetId);
+          if (el) {
+            setViewport((prev) => ({
+              ...prev,
+              x: screen.width / 2 - el.x * prev.zoom,
+              y: screen.height / 2 - el.y * prev.zoom,
+              zoom: Math.max(1, prev.zoom),
+            }));
+            setSelectedIds([targetId]);
+          }
+        }}
       />
 
       {/* Minimap interactive */}

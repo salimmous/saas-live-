@@ -87,6 +87,7 @@ export default function BoardPage({ params }: BoardPageProps) {
     addElement,
     updateElement,
     deleteElements,
+    batchOperations,
     undo,
     redo,
     broadcastCursor,
@@ -125,6 +126,7 @@ export default function BoardPage({ params }: BoardPageProps) {
       onAddElement={addElement}
       onUpdateElement={updateElement}
       onDeleteElements={deleteElements}
+      onBatchOperations={batchOperations}
       onBroadcastCursor={broadcastCursor}
       currentUser={{
         id: currentUserId,
