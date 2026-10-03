@@ -66,15 +66,74 @@ export function useBoardSync({
       updateLocalState();
     });
 
-    // 3. Connecter le serveur temps réel Hocuspocus
-    const syncUrl = process.env.NEXT_PUBLIC_SYNC_URL || 'ws://localhost:1234';
-    const provider = new HocuspocusProvider({
-      url: syncUrl,
-      name: boardId,
-      document: doc,
-      token: token || '',
-    });
-    providerRef.current = provider;
+    // 3. Connecter le serveur temps réel Hocuspocus uniquement si configuré ou sur localhost
+    const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    const syncUrl = process.env.NEXT_PUBLIC_SYNC_URL || (isLocal ? 'ws://localhost:1234' : null);
+
+    let provider: HocuspocusProvider | null = null;
+    if (syncUrl) {
+      provider = new HocuspocusProvider({
+        url: syncUrl,
+        name: boardId,
+        document: doc,
+        token: token || '',
+      });
+      providerRef.current = provider;
+
+      // Gestionnaires d'état de synchronisation
+      provider.on('status', ({ status }: { status: string }) => {
+        if (status === 'connected') {
+          setSyncState('saved');
+          setErrorMessage(null);
+        } else if (status === 'connecting') {
+          // Mode transparent
+        } else if (status === 'disconnected') {
+          setSyncState('saved');
+        }
+      });
+
+      provider.on('synced', ({ state }: { state: boolean }) => {
+        if (state) {
+          setSyncState('saved');
+          updateLocalState();
+        }
+      });
+
+      provider.on('authenticationFailed', () => {
+        setSyncState('saved');
+        setErrorMessage(null);
+      });
+
+      // Awareness : présence, curseurs distants et sélections
+      const awareness = provider.awareness;
+      if (awareness) {
+        awareness.setLocalStateField('user', {
+          id: userId,
+          name: userName,
+          color: colorRef.current,
+          selectedIds: [],
+          cursor: null,
+          lastActive: Date.now(),
+        });
+
+        const handleAwarenessChange = () => {
+          const states = awareness.getStates();
+          const activeUsers: UserPresence[] = [];
+
+          states.forEach((state: any, clientID: number) => {
+            if (clientID !== awareness.clientID && state?.user) {
+              activeUsers.push(state.user as UserPresence);
+            }
+          });
+
+          setPresenceUsers(activeUsers);
+        };
+
+        awareness.on('change', handleAwarenessChange);
+      }
+    } else {
+      setSyncState('saved');
+    }
 
     // 4. Configurer UndoManager avec filtre d'origine stricte (actions de l'utilisateur courant uniquement)
     const undoManager = new Y.UndoManager(yElements, {
@@ -106,66 +165,12 @@ export function useBoardSync({
       updateLocalState();
     });
 
-    // 6. Gestionnaires d'état de synchronisation
-    provider.on('status', ({ status }: { status: string }) => {
-      if (status === 'connected') {
-        setSyncState('saved');
-        setErrorMessage(null);
-      } else if (status === 'connecting') {
-        // Mode transparent
-      } else if (status === 'disconnected') {
-        setSyncState('saved');
-      }
-    });
-
-    provider.on('synced', ({ state }: { state: boolean }) => {
-      if (state) {
-        setSyncState('saved');
-        updateLocalState();
-      }
-    });
-
-    provider.on('authenticationFailed', () => {
-      // Tolérance aux pannes réseau : reste en mode sauvegardé local
-      setSyncState('saved');
-      setErrorMessage(null);
-    });
-
-    // 7. Awareness : présence, curseurs distants et sélections
-    const awareness = provider.awareness;
-    if (awareness) {
-      // Définir l'état initial local
-      awareness.setLocalStateField('user', {
-        id: userId,
-        name: userName,
-        color: colorRef.current,
-        selectedIds: [],
-        cursor: null,
-        lastActive: Date.now(),
-      });
-
-      const handleAwarenessChange = () => {
-        const states = awareness.getStates();
-        const activeUsers: UserPresence[] = [];
-
-        states.forEach((state: any, clientID: number) => {
-          if (clientID !== awareness.clientID && state?.user) {
-            activeUsers.push(state.user as UserPresence);
-          }
-        });
-
-        setPresenceUsers(activeUsers);
-      };
-
-      awareness.on('change', handleAwarenessChange);
-    }
-
     // Chargement initial
     updateLocalState();
 
     return () => {
       undoManager.destroy();
-      provider.destroy();
+      if (provider) provider.destroy();
       persistence.destroy();
       doc.destroy();
       docRef.current = null;
