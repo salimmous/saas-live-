@@ -124,5 +124,14 @@ Ce document consigne l'ensemble des choix techniques, des arbitrages et de leurs
   - Incrément séquentiel de version (`schemaVersion`), horodatage précis et traçabilité de l'auteur.
   - Restauration atomique restaurant l'état exact du tableau blanc en une seule transaction.
 
+---
 
+## 10. Déploiement Production & Vercel Monorepo
 
+- **Déploiement Vercel :**
+  - Projet Vercel : `saas-live-gvkv` relié au repository GitHub `https://github.com/salimmous/saas-live-.git`.
+  - Configuration du monorepo via `vercel.json` à la racine : commande de build personnalisée `pnpm --filter @whiteboard/shared run db:generate && pnpm --filter @whiteboard/shared run build && pnpm --filter web run build` et `outputDirectory: "apps/web/.next"`.
+  - Isolation des Dockerfiles dans `docker/` (`docker/sync.Dockerfile` et `docker/web.Dockerfile`) et ajout de `.vercelignore` afin d'éviter toute détection erronée de conteneur Vercel (`buildah`).
+- **Correction Sécurité Next.js (CVE-2025-66478) :**
+  - Montée de version de Next.js vers la version sécurisée officielle `15.5.27` avec `eslint-config-next: 15.5.27`, résolvant le blocage de sécurité lors du build Vercel.
+  - Déploiement vérifié avec succès en production : `https://saas-live-gvkv.vercel.app` (HTTP 200).
