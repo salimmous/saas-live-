@@ -26,6 +26,7 @@ interface MeetSession {
   isActive: boolean;
   participants: Map<string, MeetParticipant>;
   waitingRoom: Map<string, WaitingUser>;
+  signals: Map<string, Array<{ from: string; signal: any }>>;
   updatedAt: number;
 }
 
@@ -46,9 +47,13 @@ function getOrCreateSession(boardId: string, hostId?: string, hostName?: string)
       isActive: true,
       participants: new Map(),
       waitingRoom: new Map(),
+      signals: new Map(),
       updatedAt: Date.now(),
     };
     activeMeets.set(boardId, session);
+  }
+  if (!session.signals) {
+    session.signals = new Map();
   }
   if (hostId && (!session.hostId || session.hostId === 'host')) {
     session.hostId = hostId;
@@ -237,11 +242,18 @@ export async function POST(req: NextRequest, context: RouteContext) {
         if (body.hasAudio !== undefined) participant.hasAudio = body.hasAudio;
         if (body.isSpeaking !== undefined) participant.isSpeaking = body.isSpeaking;
       }
+      let pendingSignals: any[] = [];
+      if (session.signals && userId) {
+        pendingSignals = session.signals.get(userId) || [];
+        session.signals.delete(userId);
+      }
+
       session.updatedAt = Date.now();
       return NextResponse.json({
         participant,
         waitingRoom: Array.from(session.waitingRoom.values()),
         participants: Array.from(session.participants.values()),
+        signals: pendingSignals,
       });
     }
 
@@ -249,7 +261,18 @@ export async function POST(req: NextRequest, context: RouteContext) {
     case 'leave': {
       session.participants.delete(userId);
       session.waitingRoom.delete(userId);
+      if (session.signals) session.signals.delete(userId);
       session.updatedAt = Date.now();
+      return NextResponse.json({ success: true });
+    }
+
+    // 9. WebRTC P2P Signaling (Offer, Answer, ICE candidate)
+    case 'signal': {
+      const { to, signal } = body;
+      if (!session.signals) session.signals = new Map();
+      const existing = session.signals.get(to) || [];
+      existing.push({ from: userId, signal });
+      session.signals.set(to, existing);
       return NextResponse.json({ success: true });
     }
 
