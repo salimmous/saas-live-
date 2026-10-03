@@ -42,14 +42,29 @@ export default function HomePage() {
           router.push('/dashboard');
         }
       } else {
-        const res = await signIn.email({
-          email,
-          password,
-        });
-        if (res.error) {
-          setError(res.error.message || 'Email ou mot de passe incorrect');
-        } else {
-          router.push('/dashboard');
+        try {
+          const res = await signIn.email({
+            email,
+            password,
+          });
+          if (res.error) {
+            setError(res.error.message || 'Email ou mot de passe incorrect');
+          } else {
+            router.push('/dashboard');
+          }
+        } catch {
+          // Repli direct via fetch sur la même origine
+          const directRes = await fetch('/api/auth/sign-in/email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password }),
+          });
+          if (directRes.ok) {
+            router.push('/dashboard');
+          } else {
+            const errData = await directRes.json().catch(() => ({}));
+            setError(errData.message || 'Email ou mot de passe incorrect');
+          }
         }
       }
     } catch (err: any) {
