@@ -86,3 +86,21 @@ Ce document consigne l'ensemble des choix techniques, des arbitrages et de leurs
   - Support de TXT, Word DOCX (via `mammoth`) et PDF textuel (via `unpdf`) convertis au choix en Mind Map radiale, Frise chronologique (timeline) ou Plan en colonnes hiérarchiques.
   - Chaque élément généré conserve la mention d'origine via `meta.sourceDocRef: "Source: <nom_du_fichier>"`.
 
+---
+
+## 8. Ateliers, Médias Riches & Partage (Phase 3)
+
+- **Confidentialité & Décompte des Votes (Feature 13) :**
+  - Les votes sont enregistrés en base PostgreSQL (`Vote` et `VoteSession`) via transactions Prisma garantissant l'atomicité et le respect du plafond de votes par utilisateur (`votesPerUser`).
+  - Pendant qu'une session est active, les décomptes globaux restent masqués : chaque participant ne voit que ses propres votes. À la clôture, le serveur calcule et expose le classement et le podium.
+- **Brainstorming Privé Étéanche (Feature 14) :**
+  - Pour garantir que les brouillons restent strictement privés et invisibles dans les flux réseau WebSocket ou les inspecteurs DOM, ils sont isolés dans la table PostgreSQL `BrainstormDraft` et ne transitent jamais par Yjs ou l'Awareness.
+  - La révélation ("Révéler toutes mes idées") marque les brouillons comme révélés en base et les insère en une transaction Yjs unique sur le tableau partagé.
+- **Sécurité Médias & Prévention SSRF (Feature 16) :**
+  - Téléversement direct multipart vérifié (MIME types stricts, quotas de 10 Mo pour images et 50 Mo pour vidéos) stocké via `StorageProvider` avec URL signée HMAC.
+  - L'endpoint `/api/link-preview` intègre une barrière SSRF complète : rejet des noms d'hôtes locaux (`localhost`, `.local`, `.internal`), des adresses de bouclage (`127.0.0.1`, `::1`), des plages privées RFC 1918 (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) et de l'IP de métadonnées cloud AWS/GCP (`169.254.169.254`).
+- **Présentation Animée (Feature 12) & Prototypes Cliquables (Feature 20) :**
+  - Les cadres (`frame`) définissent les diapositives avec transition de caméra interpolée vers les coordonnées de cadre.
+  - Les zones interactives (`hotspot`) permettent de prototyper des parcours applicatifs en sautant d'un cadre à un autre au clic en mode prototype.
+
+

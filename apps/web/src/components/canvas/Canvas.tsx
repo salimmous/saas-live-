@@ -24,6 +24,10 @@ import { ShareModal } from './ShareModal';
 import { SyncState } from '@/hooks/useBoardSync';
 import { toPng } from 'html-to-image';
 import { AiPanel } from '../panels/AiPanel';
+import { VoteModal } from '../panels/VoteModal';
+import { BrainstormModal } from '../panels/BrainstormModal';
+import { PresentationOverlay } from '../panels/PresentationOverlay';
+import { LinkPreviewModal } from './LinkPreviewModal';
 import { computeAutoLayout } from '@whiteboard/shared';
 
 interface CanvasProps {
@@ -87,10 +91,18 @@ export function Canvas({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [clipboard, setClipboard] = useState<BoardElement[]>([]);
 
-  // Modales
+  // Modales & Ateliers
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
   const [showAiPanel, setShowAiPanel] = useState(false);
+  const [showVoteModal, setShowVoteModal] = useState(false);
+  const [showBrainstormModal, setShowBrainstormModal] = useState(false);
+  const [showPresentation, setShowPresentation] = useState(false);
+  const [showLinkModal, setShowLinkModal] = useState(false);
+  const [isPrototypeMode, setIsPrototypeMode] = useState(false);
+  const [activeVoteSession, setActiveVoteSession] = useState<any>(null);
+  const [isVotingActive, setIsVotingActive] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // États d'interaction
   const [isPanning, setIsPanning] = useState(false);
@@ -575,6 +587,28 @@ export function Canvas({
       return;
     }
 
+    if (currentTool === 'hotspot' && !isReadOnly) {
+      const frames = elementsArray.filter((el) => el.type === 'frame');
+      const targetFrame = frames[0];
+      const newId = nanoid();
+      onAddElement({
+        id: newId,
+        type: 'hotspot',
+        x: Math.round(worldPoint.x - 70),
+        y: Math.round(worldPoint.y - 25),
+        width: 140,
+        height: 50,
+        rotation: 0,
+        zIndex: elementsArray.length + 1,
+        targetFrameId: targetFrame ? targetFrame.id : '',
+        label: targetFrame ? `→ ${(targetFrame as any).title}` : 'Lien vers cadre',
+        meta: { createdAt: Date.now(), updatedAt: Date.now() },
+      });
+      setSelectedIds([newId]);
+      setCurrentTool('select');
+      return;
+    }
+
     // 3. Clic dans le vide avec outil 'select' -> Démarre rectangle de sélection ou vide sélection
     if (!e.shiftKey) {
       setSelectedIds([]);
@@ -755,6 +789,21 @@ export function Canvas({
       return;
     }
 
+    // Si session de vote active : voter ou retirer le vote par clic
+    if (isVotingActive && activeVoteSession) {
+      handleVoteClick(id);
+      return;
+    }
+
+    // Si mode prototype actif : naviguer si l'élément cliqué est un hotspot
+    if (isPrototypeMode) {
+      const el = elements.get(id);
+      if (el?.type === 'hotspot' && (el as any).targetFrameId) {
+        handleNavigateToFrame((el as any).targetFrameId);
+        return;
+      }
+    }
+
     // Gestion de la sélection simple / multiple (Maj)
     let nextSelected: string[];
     if (e.shiftKey) {
@@ -815,6 +864,136 @@ export function Canvas({
     }
   };
 
+  // Vote sur un élément (Feature 13)
+  const handleVoteClick = async (elementId: string) => {
+    if (!activeVoteSession) return;
+    const isVoted = activeVoteSession.myVotes?.includes(elementId);
+    const endpoint = isVoted ? 'uncast' : 'cast';
+
+    try {
+      const res = await fetch(`/api/boards/${boardId}/votes/${activeVoteSession.id}/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ elementId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'Erreur lors du vote.');
+        return;
+      }
+      setActiveVoteSession((prev: any) => {
+        if (!prev) return prev;
+        const updatedMyVotes = isVoted
+          ? (prev.myVotes || []).filter((item: string) => item !== elementId)
+          : [...(prev.myVotes || []), elementId];
+        return {
+          ...prev,
+          myVotes: updatedMyVotes,
+          remainingVotes: data.remainingVotes,
+        };
+      });
+    } catch (e: any) {
+      alert(`Erreur: ${e.message}`);
+    }
+  };
+
+  // Téléversement et insertion d'images / vidéos (Feature 16)
+  const handleFileUpload = async (file: File, worldX?: number, worldY?: number) => {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('boardId', boardId);
+
+      const res = await fetch('/api/storage/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
+      const posX = worldX ?? Math.round((screen.width / 2 - viewport.x) / viewport.zoom);
+      const posY = worldY ?? Math.round((screen.height / 2 - viewport.y) / viewport.zoom);
+
+      if (data.isVideo) {
+        const newEl: BoardElement = {
+          id: nanoid(),
+          type: 'video',
+          x: posX - 240,
+          y: posY - 160,
+          width: 480,
+          height: 320,
+          rotation: 0,
+          zIndex: elementsArray.length + 1,
+          url: data.url,
+          videoType: 'upload',
+          title: data.filename,
+          meta: { createdAt: Date.now(), updatedAt: Date.now() },
+        };
+        onAddElement(newEl);
+        setSelectedIds([newEl.id]);
+      } else {
+        const newEl: BoardElement = {
+          id: nanoid(),
+          type: 'image',
+          x: posX - 180,
+          y: posY - 130,
+          width: 360,
+          height: 260,
+          rotation: 0,
+          zIndex: elementsArray.length + 1,
+          url: data.url,
+          alt: data.filename,
+          meta: { createdAt: Date.now(), updatedAt: Date.now() },
+        };
+        onAddElement(newEl);
+        setSelectedIds([newEl.id]);
+      }
+    } catch (err: any) {
+      alert(`Erreur téléversement média : ${err.message}`);
+    }
+  };
+
+  // Glisser-déposer de fichiers multimédias
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    if (isReadOnly) return;
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      const rect = containerRef.current?.getBoundingClientRect();
+      const clientX = e.clientX - (rect?.left || 0);
+      const clientY = e.clientY - (rect?.top || 0);
+      const pt = screenToWorld(clientX, clientY);
+      await handleFileUpload(file, pt.x, pt.y);
+    }
+  };
+
+  // Collage direct d'images (Ctrl+V / Cmd+V)
+  useEffect(() => {
+    const handlePaste = async (e: ClipboardEvent) => {
+      if (isReadOnly) return;
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          (activeEl as HTMLElement).isContentEditable)
+      ) {
+        return;
+      }
+
+      if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
+        e.preventDefault();
+        const file = e.clipboardData.files[0];
+        await handleFileUpload(file);
+      }
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isReadOnly, boardId, viewport, screen]);
+
   // Exportation du tableau en image PNG de haute qualité (Section 5)
   const handleExportPng = async () => {
     if (!worldRef.current) return;
@@ -841,6 +1020,8 @@ export function Canvas({
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={handleDrop}
       className={`relative w-screen h-screen overflow-hidden canvas-grid ${cursorClass}`}
     >
       {/* Barre de navigation supérieure */}
@@ -854,10 +1035,39 @@ export function Canvas({
         currentUser={currentUser}
         onOpenShareModal={() => setShowShareModal(true)}
         onExportPng={handleExportPng}
-        onStartPresentation={onStartPresentation}
-        onOpenVoteModal={onOpenVoteModal}
-        onOpenBrainstormModal={onOpenBrainstormModal}
+        onStartPresentation={onStartPresentation || (() => setShowPresentation(true))}
+        onOpenVoteModal={onOpenVoteModal || (() => setShowVoteModal(true))}
+        onOpenBrainstormModal={onOpenBrainstormModal || (() => setShowBrainstormModal(true))}
       />
+
+      {/* Bannière Mode Vote Actif */}
+      {isVotingActive && activeVoteSession && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-indigo-600/95 backdrop-blur-md text-white px-5 py-2 rounded-full shadow-lg border border-indigo-400/40 flex items-center gap-3 z-40 text-xs font-medium animate-in fade-in slide-in-from-top-4">
+          <span className="w-2 h-2 rounded-full bg-green-400 animate-ping" />
+          <span>
+            Session : <strong>{activeVoteSession.title}</strong> — {activeVoteSession.remainingVotes} vote(s) restant(s)
+          </span>
+          <button
+            onClick={() => setShowVoteModal(true)}
+            className="px-2.5 py-1 bg-white/20 hover:bg-white/30 rounded-full text-[11px] font-bold transition-colors ml-1"
+          >
+            Résultats
+          </button>
+        </div>
+      )}
+
+      {/* Bannière Mode Prototype Actif */}
+      {isPrototypeMode && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-emerald-600/95 backdrop-blur-md text-white px-5 py-2 rounded-full shadow-lg border border-emerald-400/40 flex items-center gap-3 z-40 text-xs font-medium animate-in fade-in slide-in-from-top-4">
+          <span>📱 <strong>Mode Prototype Actif</strong> — Cliquez sur les zones pour naviguer</span>
+          <button
+            onClick={() => setIsPrototypeMode(false)}
+            className="px-2.5 py-1 bg-white/20 hover:bg-white/30 rounded-full text-[11px] font-bold transition-colors ml-1"
+          >
+            Quitter
+          </button>
+        </div>
+      )}
 
       {/* Couche Monde Unique transformée pour le Pan et Zoom */}
       <div
@@ -974,8 +1184,26 @@ export function Canvas({
         }
         onFitToContent={handleFitToContent}
         onAutoLayout={handleAutoLayout}
+        onOpenLinkModal={() => setShowLinkModal(true)}
+        onTriggerFileUpload={() => fileInputRef.current?.click()}
+        isPrototypeMode={isPrototypeMode}
+        onTogglePrototypeMode={() => setIsPrototypeMode(!isPrototypeMode)}
         onToggleAiPanel={onToggleAiPanel || (() => setShowAiPanel(!showAiPanel))}
         onOpenHelp={() => setShowHelpModal(true)}
+      />
+
+      {/* Champ invisible pour le téléversement de fichier multimédia */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*,video/*"
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files && e.target.files[0]) {
+            handleFileUpload(e.target.files[0]);
+            e.target.value = '';
+          }
+        }}
       />
 
       {/* Panneau IA (Phase 2) */}
@@ -1021,6 +1249,56 @@ export function Canvas({
             x: screen.width / 2 - worldX * prev.zoom,
             y: screen.height / 2 - worldY * prev.zoom,
           }));
+        }}
+      />
+
+      {/* Modale de votes (Phase 3) */}
+      <VoteModal
+        isOpen={showVoteModal}
+        onClose={() => setShowVoteModal(false)}
+        boardId={boardId}
+        elements={elementsArray}
+        onFocusElement={(id) => handleNavigateToFrame(id)}
+        isVotingActive={isVotingActive}
+        setIsVotingActive={setIsVotingActive}
+        activeVoteSession={activeVoteSession}
+        setActiveVoteSession={setActiveVoteSession}
+      />
+
+      {/* Modale de Brainstorming privé (Phase 3) */}
+      <BrainstormModal
+        isOpen={showBrainstormModal}
+        onClose={() => setShowBrainstormModal(false)}
+        boardId={boardId}
+        onBatchAddElements={(newEls) => {
+          if (onBatchOperations) {
+            onBatchOperations(newEls.map((el) => ({ kind: 'create', element: el })));
+          } else {
+            newEls.forEach((el) => onAddElement(el));
+          }
+        }}
+        viewportCenter={{
+          x: (screen.width / 2 - viewport.x) / viewport.zoom,
+          y: (screen.height / 2 - viewport.y) / viewport.zoom,
+        }}
+      />
+
+      {/* Mode Présentation animé (Phase 3) */}
+      <PresentationOverlay
+        isActive={showPresentation}
+        onClose={() => setShowPresentation(false)}
+        elements={elementsArray}
+        onFocusFrame={(frame) => handleNavigateToFrame(frame.id)}
+      />
+
+      {/* Modale Carte de lien web (Phase 3) */}
+      <LinkPreviewModal
+        isOpen={showLinkModal}
+        onClose={() => setShowLinkModal(false)}
+        onAddElement={onAddElement}
+        viewportCenter={{
+          x: (screen.width / 2 - viewport.x) / viewport.zoom,
+          y: (screen.height / 2 - viewport.y) / viewport.zoom,
         }}
       />
 

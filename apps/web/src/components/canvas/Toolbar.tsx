@@ -19,6 +19,9 @@ import {
   Maximize2,
   Sparkles,
   HelpCircle,
+  Image as ImageIcon,
+  Link2,
+  PlaySquare,
 } from 'lucide-react';
 
 export type CanvasTool =
@@ -31,7 +34,8 @@ export type CanvasTool =
   | 'pen'
   | 'connector'
   | 'frame'
-  | 'mindmap';
+  | 'mindmap'
+  | 'hotspot';
 
 interface ToolbarProps {
   currentTool: CanvasTool;
@@ -46,6 +50,10 @@ interface ToolbarProps {
   onZoomReset: () => void;
   onFitToContent: () => void;
   onAutoLayout?: () => void;
+  onOpenLinkModal?: () => void;
+  onTriggerFileUpload?: () => void;
+  isPrototypeMode?: boolean;
+  onTogglePrototypeMode?: () => void;
   onToggleAiPanel: () => void;
   onOpenHelp: () => void;
 }
@@ -63,6 +71,10 @@ export function Toolbar({
   onZoomReset,
   onFitToContent,
   onAutoLayout,
+  onOpenLinkModal,
+  onTriggerFileUpload,
+  isPrototypeMode,
+  onTogglePrototypeMode,
   onToggleAiPanel,
   onOpenHelp,
 }: ToolbarProps) {
@@ -237,6 +249,44 @@ export function Toolbar({
           <Network size={18} />
         </button>
 
+        {/* Média / Image & Vidéo */}
+        {onTriggerFileUpload && (
+          <button
+            type="button"
+            title="Insérer une image ou vidéo (Glisser-déposer supporté)"
+            onClick={onTriggerFileUpload}
+            className="p-2.5 rounded-xl text-slate-600 hover:bg-slate-100 hover:text-blue-600 transition-all"
+          >
+            <ImageIcon size={18} />
+          </button>
+        )}
+
+        {/* Carte de lien web */}
+        {onOpenLinkModal && (
+          <button
+            type="button"
+            title="Insérer un lien web (Carte OpenGraph enrichie)"
+            onClick={onOpenLinkModal}
+            className="p-2.5 rounded-xl text-slate-600 hover:bg-slate-100 hover:text-blue-600 transition-all"
+          >
+            <Link2 size={18} />
+          </button>
+        )}
+
+        {/* Zone cliquable Hotspot */}
+        <button
+          type="button"
+          title="Zone cliquable / Prototype (H)"
+          onClick={() => onSelectTool('hotspot')}
+          className={`p-2.5 rounded-xl transition-all ${
+            currentTool === 'hotspot'
+              ? 'bg-indigo-600 text-white shadow-sm'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <PlaySquare size={18} />
+        </button>
+
         {/* Organisation automatique (Feature 2) */}
         {onAutoLayout && (
           <button
@@ -246,6 +296,23 @@ export function Toolbar({
             className="p-2.5 rounded-xl text-slate-600 hover:bg-slate-100 hover:text-blue-600 transition-all"
           >
             <Maximize2 size={18} className="rotate-45" />
+          </button>
+        )}
+
+        {/* Bascule Mode Prototype interactif */}
+        {onTogglePrototypeMode && (
+          <button
+            type="button"
+            title={isPrototypeMode ? 'Quitter le mode prototype' : 'Tester le prototype interactif'}
+            onClick={onTogglePrototypeMode}
+            className={`p-2.5 rounded-xl transition-all text-xs font-semibold flex items-center gap-1 ${
+              isPrototypeMode
+                ? 'bg-emerald-600 text-white shadow-sm ring-2 ring-emerald-400'
+                : 'text-slate-600 hover:bg-emerald-50 hover:text-emerald-700'
+            }`}
+          >
+            <PlaySquare size={16} />
+            <span className="hidden xl:inline">{isPrototypeMode ? 'Aperçu actif' : 'Prototype'}</span>
           </button>
         )}
 
