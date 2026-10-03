@@ -135,3 +135,25 @@ Ce document consigne l'ensemble des choix techniques, des arbitrages et de leurs
 - **Correction Sécurité Next.js (CVE-2025-66478) :**
   - Montée de version de Next.js vers la version sécurisée officielle `15.5.27` avec `eslint-config-next: 15.5.27`, résolvant le blocage de sécurité lors du build Vercel.
   - Déploiement vérifié avec succès en production : `https://saas-live-gvkv.vercel.app` (HTTP 200).
+
+---
+
+## 11. Réunion Meet Intégrée (Audio, Vidéo, Salle d'Attente & Modération Hôte)
+
+- **Flux Caméra & Voix WebRTC :**
+  - Capture directe via `navigator.mediaDevices.getUserMedia({ video: true, audio: true })` avec bascule dégradée audio seul et simulation tolérante aux pannes sans périphériques.
+  - Rendu par bulles vidéo flottantes en superposition sur le tableau blanc avec indicateur d'activité vocale dynamique.
+  - Partage d'écran en direct via `getDisplayMedia`.
+- **Salle d'Attente & Demandes d'Entrée ("Knock") :**
+  - Tout invité rejoignant via le lien Meet est placé en salle d'attente sécurisée tant que l'hôte n'a pas validé son entrée.
+  - L'hôte reçoit une alerte instantanée avec les boutons `[Autoriser]` et `[Refuser]`.
+- **Contrôle & Modération par l'Hôte :**
+  - Panneau de gestion des participants permettant à l'hôte d'ajuster individuellement ou globalement :
+    - 🎤 Forcer le silence / autoriser le micro (`isMutedByHost`).
+    - 📹 Bloquer / autoriser le flux vidéo (`isVideoBlockedByHost`).
+    - ✏️ Accorder le droit d'écriture sur le tableau ou basculer en lecture seule (`canDraw`).
+    - 🚫 Expulser un participant de la réunion.
+- **Résilience Réseau & Synchronisation :**
+  - Statut de synchronisation transparent privilégiant la persistance locale IndexedDB sans afficher d'erreurs intempestives.
+  - Signalisation et heartbeat temps réel via `/api/boards/[id]/meet`.
+
