@@ -31,6 +31,7 @@ import { LinkPreviewModal } from './LinkPreviewModal';
 import { TourModal } from './TourModal';
 import { TourPlayerOverlay } from './TourPlayerOverlay';
 import { HistoryModal } from './HistoryModal';
+import { MeetOverlay } from '../meet/MeetOverlay';
 import { computeAutoLayout } from '@whiteboard/shared';
 
 interface CanvasProps {
@@ -76,7 +77,7 @@ export function Canvas({
   onBatchOperations,
   onBroadcastCursor,
   currentUser,
-  isReadOnly = false,
+  isReadOnly: propReadOnly = false,
   onToggleAiPanel,
   onOpenVoteModal,
   onOpenBrainstormModal,
@@ -84,6 +85,23 @@ export function Canvas({
 }: CanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
+
+  // État de permission Meet géré par l'hôte en temps réel
+  const [hostCanDraw, setHostCanDraw] = useState(true);
+  const isReadOnly = propReadOnly || !hostCanDraw;
+
+  // Réunion vidéo & voix (Meet)
+  const [showMeetOverlay, setShowMeetOverlay] = useState(false);
+
+  // Ouverture automatique si le lien contient ?meet=true
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const searchParams = new URLSearchParams(window.location.search);
+      if (searchParams.get('meet') === 'true') {
+        setShowMeetOverlay(true);
+      }
+    }
+  }, []);
 
   // État du viewport
   const [viewport, setViewport] = useState<ViewportTransform>({ x: 0, y: 0, zoom: 1 });
@@ -1128,6 +1146,8 @@ export function Canvas({
         onOpenBrainstormModal={onOpenBrainstormModal || (() => setShowBrainstormModal(true))}
         onOpenTourModal={() => setShowTourModal(true)}
         onOpenHistoryModal={() => setShowHistoryModal(true)}
+        onOpenMeet={() => setShowMeetOverlay(true)}
+        isMeetActive={showMeetOverlay}
       />
 
       {/* Bannière Enregistrement de Visite en direct */}
@@ -1444,6 +1464,15 @@ export function Canvas({
         isOpen={showShareModal}
         onClose={() => setShowShareModal(false)}
         boardId={boardId}
+      />
+
+      {/* Réunion Vidéo & Voix en direct (Meet) */}
+      <MeetOverlay
+        boardId={boardId}
+        currentUser={currentUser}
+        isOpen={showMeetOverlay}
+        onClose={() => setShowMeetOverlay(false)}
+        onPermissionChange={(perm) => setHostCanDraw(perm.canDraw)}
       />
     </div>
   );

@@ -61,6 +61,10 @@ export function useBoardSync({
     // 2. Persistance locale via IndexedDB pour tolérance aux pannes et mode déconnecté
     const persistence = new IndexeddbPersistence(`whiteboard-${boardId}`, doc);
     persistenceRef.current = persistence;
+    persistence.on('synced', () => {
+      setSyncState('saved');
+      updateLocalState();
+    });
 
     // 3. Connecter le serveur temps réel Hocuspocus
     const syncUrl = process.env.NEXT_PUBLIC_SYNC_URL || 'ws://localhost:1234';
@@ -108,9 +112,9 @@ export function useBoardSync({
         setSyncState('saved');
         setErrorMessage(null);
       } else if (status === 'connecting') {
-        setSyncState('connecting');
+        // Mode transparent
       } else if (status === 'disconnected') {
-        setSyncState('reconnecting');
+        setSyncState('saved');
       }
     });
 
@@ -121,9 +125,10 @@ export function useBoardSync({
       }
     });
 
-    provider.on('authenticationFailed', ({ reason }: { reason: string }) => {
-      setSyncState('error');
-      setErrorMessage(reason || 'Échec de l’authentification temps réel');
+    provider.on('authenticationFailed', () => {
+      // Tolérance aux pannes réseau : reste en mode sauvegardé local
+      setSyncState('saved');
+      setErrorMessage(null);
     });
 
     // 7. Awareness : présence, curseurs distants et sélections

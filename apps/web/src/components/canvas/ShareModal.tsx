@@ -23,6 +23,7 @@ export function ShareModal({ isOpen, onClose, boardId }: ShareModalProps) {
   const [linkName, setLinkName] = useState('');
   const [loading, setLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedMeet, setCopiedMeet] = useState(false);
 
   // Charger les liens invités existants
   useEffect(() => {
@@ -87,7 +88,7 @@ export function ShareModal({ isOpen, onClose, boardId }: ShareModalProps) {
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
           <div className="flex items-center gap-2 text-slate-800 font-semibold text-base">
             <Link2 size={18} className="text-blue-600" />
-            <span>Partager le tableau (Accès Invité)</span>
+            <span>Partager le tableau & Réunion Meet</span>
           </div>
           <button
             onClick={onClose}
@@ -99,10 +100,50 @@ export function ShareModal({ isOpen, onClose, boardId }: ShareModalProps) {
 
         {/* Corps */}
         <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
-          {/* Formulaire de création de lien */}
+          {/* Bloc d'invitation rapide Meet */}
+          <div className="p-4 rounded-xl bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200/80 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                <h4 className="text-xs font-bold text-indigo-950 uppercase tracking-wider">
+                  Lien direct Réunion Meet (Audio, Vidéo & Tableau)
+                </h4>
+              </div>
+              <span className="text-[10px] font-semibold bg-indigo-200/60 text-indigo-800 px-2 py-0.5 rounded-full">
+                Direct
+              </span>
+            </div>
+            <p className="text-xs text-slate-600">
+              Donnez ce lien à vos collaborateurs. Ils entreront directement dans la salle avec caméra et micro, et vous pourrez autoriser leur accès et contrôler leurs permissions en direct.
+            </p>
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="text"
+                readOnly
+                value={typeof window !== 'undefined' ? `${window.location.origin}/board/${boardId}?meet=true` : ''}
+                className="w-full text-xs font-mono bg-white border border-indigo-200 rounded-lg px-3 py-2 text-slate-700 select-all outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  if (typeof window !== 'undefined') {
+                    navigator.clipboard.writeText(`${window.location.origin}/board/${boardId}?meet=true`);
+                    setCopiedMeet(true);
+                    setTimeout(() => setCopiedMeet(false), 2000);
+                  }
+                }}
+                className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg shadow-sm transition-all shrink-0 flex items-center gap-1.5"
+              >
+                {copiedMeet ? <Check size={14} className="text-emerald-300" /> : <Copy size={14} />}
+                <span>{copiedMeet ? 'Copié !' : 'Copier'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Formulaire de création de lien invité */}
           <form onSubmit={handleCreateLink} className="space-y-4 bg-slate-50/80 p-4 rounded-xl border border-slate-200/80">
             <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Générer un nouveau lien d&apos;invitation
+              Générer un lien invité standard
             </h4>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

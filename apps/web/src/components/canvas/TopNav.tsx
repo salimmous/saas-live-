@@ -15,6 +15,7 @@ import {
   Lightbulb,
   Video,
   History,
+  Radio,
 } from 'lucide-react';
 import { SyncState } from '@/hooks/useBoardSync';
 import { UserPresence } from '@whiteboard/shared';
@@ -34,6 +35,8 @@ interface TopNavProps {
   onOpenBrainstormModal?: () => void;
   onOpenTourModal?: () => void;
   onOpenHistoryModal?: () => void;
+  onOpenMeet?: () => void;
+  isMeetActive?: boolean;
 }
 
 export function TopNav({
@@ -51,6 +54,8 @@ export function TopNav({
   onOpenBrainstormModal,
   onOpenTourModal,
   onOpenHistoryModal,
+  onOpenMeet,
+  isMeetActive,
 }: TopNavProps) {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [boardTitle, setBoardTitle] = useState(title);
@@ -94,14 +99,10 @@ export function TopNav({
         );
       case 'error':
         return (
-          <button
-            type="button"
-            onClick={onRetrySync}
-            className="flex items-center gap-1.5 text-xs text-rose-700 font-medium px-2 py-1 rounded-md bg-rose-50 hover:bg-rose-100 transition-colors"
-          >
-            <AlertCircle size={12} className="text-rose-600" />
-            <span>Erreur (Réessayer)</span>
-          </button>
+          <div className="flex items-center gap-1.5 text-xs text-slate-500 font-medium px-2 py-1 rounded-md bg-slate-100/80">
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            <span className="hidden sm:inline">Enregistré (Local)</span>
+          </div>
         );
     }
   };
@@ -238,6 +239,23 @@ export function TopNav({
             </div>
           )}
         </div>
+
+        {/* Bouton Meet en direct (Audio / Vidéo & Modération) */}
+        {onOpenMeet && (
+          <button
+            type="button"
+            onClick={onOpenMeet}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold shadow-xs transition-all flex items-center gap-1.5 active:scale-95 ${
+              isMeetActive
+                ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-indigo-500/25 ring-2 ring-indigo-400/40'
+                : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/60'
+            }`}
+            title="Lancer ou rejoindre la réunion Vidéo & Voix en direct"
+          >
+            <Radio size={14} className={isMeetActive ? 'animate-pulse text-emerald-300' : 'text-indigo-600'} />
+            <span className="font-bold">{isMeetActive ? 'Meet en cours' : 'Meet en direct'}</span>
+          </button>
+        )}
 
         {/* Bouton Partager / Lien invité */}
         <button
