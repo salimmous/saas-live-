@@ -19,3 +19,5 @@ blob-report
 *.tsbuildinfo
 .DS_Store
 storage/uploads
+.vercel
+.env*
