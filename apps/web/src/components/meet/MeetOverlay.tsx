@@ -22,6 +22,10 @@ import {
   Eye,
   Radio,
   User,
+  Hand,
+  MessageSquare,
+  Send,
+  Smile,
 } from 'lucide-react';
 
 export interface MeetParticipant {
@@ -34,6 +38,15 @@ export interface MeetParticipant {
   isMutedByHost: boolean;
   isVideoBlockedByHost: boolean;
   isSpeaking?: boolean;
+  isHandRaised?: boolean;
+}
+
+export interface ChatMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  timestamp: number;
 }
 
 export interface WaitingUser {
@@ -90,6 +103,21 @@ export function MeetOverlay({
   const [showHostPanel, setShowHostPanel] = useState(false);
   const [hasCopiedLink, setHasCopiedLink] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
+
+  // Main levée (Hand raise)
+  const [isHandRaised, setIsHandRaised] = useState(false);
+  const isHandRaisedRef = useRef(false);
+  isHandRaisedRef.current = isHandRaised;
+
+  // Chat en direct
+  const [showChat, setShowChat] = useState(false);
+  const showChatRef = useRef(false);
+  showChatRef.current = showChat;
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
+  const chatBottomRef = useRef<HTMLDivElement | null>(null);
+  const chatChannelRef = useRef<BroadcastChannel | null>(null);
 
   // Références
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -358,6 +386,25 @@ export function MeetOverlay({
         if (data.hostId) setHostId(data.hostId);
         setWaitingRoom(data.waitingRoom || []);
 
+        // Messages de chat reçus du serveur
+        if (Array.isArray(data.chatMessages)) {
+          setChatMessages((prev) => {
+            const map = new Map<string, ChatMessage>();
+            prev.forEach((m) => map.set(m.id, m));
+            let newIncoming = 0;
+            data.chatMessages.forEach((m: ChatMessage) => {
+              if (!map.has(m.id)) {
+                map.set(m.id, m);
+                if (m.senderId !== currentUser.id) newIncoming++;
+              }
+            });
+            if (newIncoming > 0 && !showChatRef.current) {
+              setUnreadChatCount((c) => c + newIncoming);
+            }
+            return Array.from(map.values()).sort((a, b) => a.timestamp - b.timestamp);
+          });
+        }
+
         const serverParticipants: MeetParticipant[] = data.participants || [];
         const currentInList = serverParticipants.find((p) => p.id === currentUser.id);
 
@@ -405,6 +452,7 @@ export function MeetOverlay({
               canDraw: currentInList ? currentInList.canDraw : true,
               isMutedByHost: currentInList ? currentInList.isMutedByHost : false,
               isVideoBlockedByHost: currentInList ? currentInList.isVideoBlockedByHost : false,
+              isHandRaised: isHandRaisedRef.current,
             });
           }
 
@@ -432,6 +480,7 @@ export function MeetOverlay({
             userName: displayName || currentUser.name,
             hasVideo: isCamOn,
             hasAudio: isMicOn,
+            isHandRaised: isHandRaisedRef.current,
           }),
         });
       }
@@ -462,6 +511,132 @@ export function MeetOverlay({
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
     };
   }, [isOpen, pollMeetState]);
+
+  // Canal de communication instantané pour le chat (entre onglets / pairs)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const channel = new BroadcastChannel(`wb_meet_chat_${boardId}`);
+      chatChannelRef.current = channel;
+
+      channel.onmessage = (event) => {
+        const msg = event.data as ChatMessage;
+        if (msg && msg.id) {
+          setChatMessages((prev) => {
+            if (prev.some((m) => m.id === msg.id)) return prev;
+            return [...prev, msg].sort((a, b) => a.timestamp - b.timestamp);
+          });
+          if (msg.senderId !== currentUser.id && !showChatRef.current) {
+            setUnreadChatCount((c) => c + 1);
+          }
+        }
+      };
+
+      return () => {
+        channel.close();
+        chatChannelRef.current = null;
+      };
+    } catch (err) {
+      console.warn('BroadcastChannel non supporté:', err);
+    }
+  }, [boardId, currentUser.id]);
+
+  // Défilement automatique vers le bas à chaque nouveau message
+  useEffect(() => {
+    if (showChat) {
+      chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages, showChat]);
+
+  // Lever / Baisser la main (Hand Raise)
+  const handleToggleHand = async () => {
+    const nextState = !isHandRaised;
+    setIsHandRaised(nextState);
+
+    setParticipants((prev) =>
+      prev.map((p) => (p.id === currentUser.id ? { ...p, isHandRaised: nextState } : p))
+    );
+
+    try {
+      await fetch(`/api/boards/${boardId}/meet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: nextState ? 'raise-hand' : 'lower-hand',
+          userId: currentUser.id,
+          isHandRaised: nextState,
+        }),
+      });
+    } catch (e) {
+      console.warn('Erreur lever/baisser main:', e);
+    }
+  };
+
+  const handleLowerParticipantHand = async (targetUserId: string) => {
+    setParticipants((prev) =>
+      prev.map((p) => (p.id === targetUserId ? { ...p, isHandRaised: false } : p))
+    );
+
+    try {
+      await fetch(`/api/boards/${boardId}/meet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'lower-hand',
+          userId: currentUser.id,
+          targetUserId,
+        }),
+      });
+    } catch (e) {
+      console.warn('Erreur baisser main:', e);
+    }
+  };
+
+  // Toggle du chat
+  const toggleChat = () => {
+    if (!showChat) {
+      setUnreadChatCount(0);
+    }
+    setShowChat((prev) => !prev);
+  };
+
+  // Envoi de message dans le chat
+  const handleSendChatMessage = async (textToSend?: string) => {
+    const text = (textToSend !== undefined ? textToSend : chatInput).trim();
+    if (!text) return;
+
+    const newMsg: ChatMessage = {
+      id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      senderId: currentUser.id,
+      senderName: displayName || currentUser.name,
+      text,
+      timestamp: Date.now(),
+    };
+
+    setChatMessages((prev) => [...prev, newMsg]);
+    if (!textToSend) setChatInput('');
+
+    if (chatChannelRef.current) {
+      try {
+        chatChannelRef.current.postMessage(newMsg);
+      } catch {}
+    }
+
+    try {
+      await fetch(`/api/boards/${boardId}/meet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'send-chat',
+          userId: currentUser.id,
+          userName: displayName || currentUser.name,
+          text,
+        }),
+      });
+    } catch (e) {
+      console.warn('Erreur envoi chat:', e);
+    }
+  };
 
   // Quitter le Meet
   const handleLeave = async () => {
@@ -866,6 +1041,29 @@ export function MeetOverlay({
         </div>
       )}
 
+      {/* Alerte Hôte : Main levée par un participant */}
+      {isHost && participants.some((p) => p.isHandRaised && p.id !== currentUser.id) && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-950 px-4 py-2 rounded-2xl shadow-2xl border border-amber-300 font-bold text-xs flex items-center gap-3 animate-bounce">
+          <div className="flex items-center gap-1.5">
+            <span className="text-base">✋</span>
+            <span>
+              {participants
+                .filter((p) => p.isHandRaised && p.id !== currentUser.id)
+                .map((p) => p.name)
+                .join(', ')}{' '}
+              demande la parole !
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowHostPanel(true)}
+            className="px-2.5 py-1 bg-slate-950 hover:bg-slate-800 text-white rounded-lg text-[11px] font-semibold transition-colors shadow-xs"
+          >
+            Gérer
+          </button>
+        </div>
+      )}
+
       {/* Bulles Vidéo Flottantes en Haut à Droite (Style Miro / FigJam) */}
       <div
         className={`fixed z-40 transition-all duration-300 ${
@@ -895,6 +1093,14 @@ export function MeetOverlay({
               </span>
             )}
           </div>
+
+          {/* Badge Main levée (Vous) */}
+          {isHandRaised && (
+            <div className="absolute top-2 right-2 z-20 flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 font-black text-[10px] shadow-lg shadow-amber-500/30 animate-bounce border border-amber-300">
+              <span>✋</span>
+              <span className="font-bold">Main levée</span>
+            </div>
+          )}
 
           <video
             ref={localVideoRef}
@@ -966,6 +1172,14 @@ export function MeetOverlay({
                       </span>
                     )}
                   </div>
+
+                  {/* Badge Main levée pour invité */}
+                  {p.isHandRaised && (
+                    <div className="absolute top-2 right-2 z-20 flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 font-black text-[10px] shadow-lg shadow-amber-500/30 animate-bounce border border-amber-300">
+                      <span>✋</span>
+                      <span className="font-bold">Demande parole</span>
+                    </div>
+                  )}
 
                   {/* Vidéo Distante en direct */}
                   <video
@@ -1074,6 +1288,39 @@ export function MeetOverlay({
         </button>
 
         <div className="w-[1px] h-6 bg-slate-700 mx-1" />
+
+        {/* Lever la main */}
+        <button
+          type="button"
+          onClick={handleToggleHand}
+          className={`p-2.5 rounded-xl transition-all flex items-center gap-1.5 text-xs font-semibold active:scale-95 ${
+            isHandRaised
+              ? 'bg-amber-500 text-slate-950 font-bold shadow-lg shadow-amber-500/30 ring-2 ring-amber-400 animate-pulse'
+              : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white'
+          }`}
+          title={isHandRaised ? 'Baisser la main' : 'Lever la main (demander la parole)'}
+        >
+          <Hand size={18} className={isHandRaised ? 'text-slate-950' : ''} />
+          <span className="hidden sm:inline">{isHandRaised ? 'Main levée' : 'Lever la main'}</span>
+        </button>
+
+        {/* Chat de réunion */}
+        <button
+          type="button"
+          onClick={toggleChat}
+          className={`p-2.5 rounded-xl transition-all flex items-center gap-1.5 text-xs font-semibold relative active:scale-95 ${
+            showChat ? 'bg-indigo-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white'
+          }`}
+          title="Chat en direct de la réunion"
+        >
+          <MessageSquare size={18} />
+          <span className="hidden md:inline">Chat</span>
+          {unreadChatCount > 0 && !showChat && (
+            <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 bg-rose-500 text-white text-[10px] font-black rounded-full flex items-center justify-center animate-bounce shadow-md">
+              {unreadChatCount > 99 ? '99+' : unreadChatCount}
+            </span>
+          )}
+        </button>
 
         {/* Bouton Participants / Modération */}
         <button
@@ -1186,9 +1433,28 @@ export function MeetOverlay({
                         )}
                         {isCurrent && <span className="text-[10px] text-slate-400">(Vous)</span>}
                       </div>
-                      <span className="text-[10px] text-slate-400 block">
-                        {p.canDraw ? 'Peut dessiner & éditer' : 'Lecture seule'}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-slate-400 block">
+                          {p.canDraw ? 'Peut dessiner & éditer' : 'Lecture seule'}
+                        </span>
+                        {p.isHandRaised && (
+                          <div className="flex items-center gap-1">
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-500/20 text-amber-300 text-[9px] font-bold border border-amber-500/30 animate-pulse">
+                              <span>✋</span>
+                              <span>Demande parole</span>
+                            </span>
+                            {isHost && !isCurrent && (
+                              <button
+                                type="button"
+                                onClick={() => handleLowerParticipantHand(p.id)}
+                                className="text-[9px] text-amber-400 hover:text-amber-300 underline font-medium"
+                              >
+                                Baisser
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -1265,6 +1531,120 @@ export function MeetOverlay({
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* Panneau de Chat Flottant (Positionné à bottom-40 à droite) */}
+      {showChat && (
+        <div className="fixed bottom-40 right-4 sm:right-8 z-50 w-80 sm:w-96 h-[460px] max-h-[calc(100vh-200px)] bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-scale-in">
+          {/* Entête du Chat */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 bg-slate-950/40">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-indigo-600/30 border border-indigo-500/40 flex items-center justify-center text-indigo-400">
+                <MessageSquare size={16} />
+              </div>
+              <div>
+                <h3 className="font-bold text-xs sm:text-sm text-white flex items-center gap-1.5">
+                  <span>Chat de Réunion</span>
+                  <span className="text-[10px] font-normal text-slate-400">({chatMessages.length})</span>
+                </h3>
+                <p className="text-[10px] text-slate-400">En direct avec tous les participants</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowChat(false)}
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          {/* Corps : Liste des messages */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
+            {chatMessages.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-center text-slate-500 p-4 space-y-2">
+                <div className="w-12 h-12 rounded-2xl bg-slate-800/60 flex items-center justify-center text-slate-400">
+                  <MessageSquare size={22} />
+                </div>
+                <p className="text-xs text-slate-300 font-medium">Aucun message pour le moment.</p>
+                <p className="text-[11px] text-slate-400">Envoyez une note, posez une question ou partagez une idée !</p>
+              </div>
+            ) : (
+              chatMessages.map((msg) => {
+                const isMe = msg.senderId === currentUser.id;
+                const timeStr = new Date(msg.timestamp).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                });
+
+                return (
+                  <div
+                    key={msg.id}
+                    className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
+                  >
+                    <div className="flex items-center gap-1.5 mb-0.5 text-[10px] text-slate-400 px-1">
+                      <span className="font-semibold text-slate-300">
+                        {isMe ? 'Vous' : msg.senderName}
+                      </span>
+                      <span>•</span>
+                      <span>{timeStr}</span>
+                    </div>
+                    <div
+                      className={`max-w-[85%] px-3.5 py-2 rounded-2xl text-xs break-words shadow-xs ${
+                        isMe
+                          ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-tr-xs'
+                          : 'bg-slate-800/90 text-slate-100 border border-slate-700/60 rounded-tl-xs'
+                      }`}
+                    >
+                      {msg.text}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+            <div ref={chatBottomRef} />
+          </div>
+
+          {/* Raccourcis Réactions / Émojis rapides */}
+          <div className="px-3 py-1.5 border-t border-slate-800/70 bg-slate-950/30 flex items-center justify-between gap-1">
+            {['👍', '✋', '💡', '❤️', '👏', '🔥'].map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => handleSendChatMessage(emoji)}
+                className="text-base px-2 py-0.5 rounded-lg hover:bg-slate-800 transition-all active:scale-125"
+                title={`Envoyer ${emoji}`}
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+
+          {/* Formulaire d'envoi */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSendChatMessage();
+            }}
+            className="p-2.5 border-t border-slate-800 bg-slate-900 flex items-center gap-2"
+          >
+            <input
+              type="text"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              placeholder="Écrivez un message..."
+              className="flex-1 px-3 py-2 bg-slate-800/90 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
+            />
+            <button
+              type="submit"
+              disabled={!chatInput.trim()}
+              className="p-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 text-white rounded-xl transition-all shadow-md active:scale-95 shrink-0"
+              title="Envoyer"
+            >
+              <Send size={15} />
+            </button>
+          </form>
         </div>
       )}
     </>

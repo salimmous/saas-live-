@@ -10,7 +10,16 @@ interface MeetParticipant {
   isMutedByHost: boolean;
   isVideoBlockedByHost: boolean;
   isSpeaking?: boolean;
+  isHandRaised?: boolean;
   lastSeen: number;
+}
+
+export interface ChatMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  timestamp: number;
 }
 
 interface WaitingUser {
@@ -27,6 +36,7 @@ interface MeetSession {
   participants: Map<string, MeetParticipant>;
   waitingRoom: Map<string, WaitingUser>;
   signals: Map<string, Array<{ from: string; signal: any }>>;
+  chatMessages: ChatMessage[];
   updatedAt: number;
 }
 
@@ -48,12 +58,16 @@ function getOrCreateSession(boardId: string, hostId?: string, hostName?: string)
       participants: new Map(),
       waitingRoom: new Map(),
       signals: new Map(),
+      chatMessages: [],
       updatedAt: Date.now(),
     };
     activeMeets.set(boardId, session);
   }
   if (!session.signals) {
     session.signals = new Map();
+  }
+  if (!session.chatMessages) {
+    session.chatMessages = [];
   }
   if (hostId && (!session.hostId || session.hostId === 'host')) {
     session.hostId = hostId;
@@ -96,6 +110,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
     hostName: session.hostName,
     participants,
     waitingRoom,
+    chatMessages: session.chatMessages ? session.chatMessages.slice(-50) : [],
     updatedAt: session.updatedAt,
   });
 }
@@ -220,7 +235,45 @@ export async function POST(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ success: true });
     }
 
-    // 7. Heartbeat & état média personnel
+    // 7. Lever / Baisser la main
+    case 'raise-hand': {
+      const { isHandRaised } = body;
+      const participant = session.participants.get(userId);
+      if (participant) {
+        participant.isHandRaised = isHandRaised;
+        session.updatedAt = Date.now();
+      }
+      return NextResponse.json({ success: true });
+    }
+
+    case 'lower-hand': {
+      const { targetUserId } = body;
+      const participant = session.participants.get(targetUserId || userId);
+      if (participant) {
+        participant.isHandRaised = false;
+        session.updatedAt = Date.now();
+      }
+      return NextResponse.json({ success: true });
+    }
+
+    // 8. Chat en direct
+    case 'send-chat': {
+      const { text } = body;
+      if (!session.chatMessages) session.chatMessages = [];
+      const msg: ChatMessage = {
+        id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        senderId: userId,
+        senderName: userName || 'Participant',
+        text: (text || '').slice(0, 1000),
+        timestamp: Date.now(),
+      };
+      session.chatMessages.push(msg);
+      if (session.chatMessages.length > 100) session.chatMessages.shift();
+      session.updatedAt = Date.now();
+      return NextResponse.json({ success: true, message: msg });
+    }
+
+    // 9. Heartbeat & état média personnel
     case 'heartbeat': {
       let participant = session.participants.get(userId);
       if (!participant) {
@@ -233,6 +286,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
           canDraw: true,
           isMutedByHost: false,
           isVideoBlockedByHost: false,
+          isHandRaised: body.isHandRaised ?? false,
           lastSeen: Date.now(),
         };
         session.participants.set(userId, participant);
@@ -241,6 +295,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
         if (body.hasVideo !== undefined) participant.hasVideo = body.hasVideo;
         if (body.hasAudio !== undefined) participant.hasAudio = body.hasAudio;
         if (body.isSpeaking !== undefined) participant.isSpeaking = body.isSpeaking;
+        if (body.isHandRaised !== undefined) participant.isHandRaised = body.isHandRaised;
       }
       let pendingSignals: any[] = [];
       if (session.signals && userId) {
@@ -253,11 +308,12 @@ export async function POST(req: NextRequest, context: RouteContext) {
         participant,
         waitingRoom: Array.from(session.waitingRoom.values()),
         participants: Array.from(session.participants.values()),
+        chatMessages: session.chatMessages ? session.chatMessages.slice(-50) : [],
         signals: pendingSignals,
       });
     }
 
-    // 8. Quitter le Meet
+    // 10. Quitter le Meet
     case 'leave': {
       session.participants.delete(userId);
       session.waitingRoom.delete(userId);
@@ -266,7 +322,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ success: true });
     }
 
-    // 9. WebRTC P2P Signaling (Offer, Answer, ICE candidate)
+    // 11. WebRTC P2P Signaling (Offer, Answer, ICE candidate)
     case 'signal': {
       const { to, signal } = body;
       if (!session.signals) session.signals = new Map();
